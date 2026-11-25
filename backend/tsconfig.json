@@ -7,6 +7,7 @@
     /* Node 20+ supports all of ES2022 */
     "target": "ES2022",
     "lib": ["ES2022"],
+    "types": ["node"],
     "module": "Node16",
     "moduleResolution": "Node16",
 
