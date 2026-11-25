@@ -113,6 +113,17 @@ function isIgnoreInsert(sql: string): boolean {
   return /INSERT\s+OR\s+IGNORE\s+INTO/i.test(sql);
 }
 
+function databaseConnectionString(): string {
+  const connectionUrl = new URL(env.DATABASE_URL!);
+  // node-postgres lets SSL options in the URL replace the explicit `ssl` config.
+  // Remove URL SSL flags so the trusted CA below is always applied.
+  const sslParameters = new Set(['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'sslpassword', 'sslfactory']);
+  for (const parameter of [...connectionUrl.searchParams.keys()]) {
+    if (sslParameters.has(parameter.toLowerCase())) connectionUrl.searchParams.delete(parameter);
+  }
+  return connectionUrl.toString();
+}
+
 async function withSqliteLock<T>(operation: () => T): Promise<T> {
   if (sqliteTransaction.getStore()) return operation();
   const previous = sqliteQueue;
@@ -133,7 +144,7 @@ export async function initializeDatabase(): Promise<void> {
         throw new Error('DATABASE_SSL_CA_BASE64 does not contain a PEM certificate');
       }
       pool = new Pool({
-        connectionString: env.DATABASE_URL,
+        connectionString: databaseConnectionString(),
         max: 5,
         ssl: { rejectUnauthorized: true, ...(sslCa ? { ca: sslCa } : {}) },
         connectionTimeoutMillis: 10_000,
