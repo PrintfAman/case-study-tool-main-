@@ -25,6 +25,8 @@ services:
         value: /api/v1
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_SSL_CA_BASE64
+        sync: false
       - key: SQLITE_MIGRATION_PATH
         value: /var/data/case-study-tool.sqlite
       - key: REPORT_STORAGE_DIR

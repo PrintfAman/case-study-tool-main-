@@ -126,7 +126,19 @@ export async function initializeDatabase(): Promise<void> {
   if (initialization) return initialization;
   initialization = (async () => {
     if (env.DATABASE_URL) {
-      pool = new Pool({ connectionString: env.DATABASE_URL, max: 5, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 10_000, query_timeout: 30_000 });
+      const sslCa = env.DATABASE_SSL_CA_BASE64
+        ? Buffer.from(env.DATABASE_SSL_CA_BASE64, 'base64').toString('utf8').trim()
+        : undefined;
+      if (sslCa && !/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.test(sslCa)) {
+        throw new Error('DATABASE_SSL_CA_BASE64 does not contain a PEM certificate');
+      }
+      pool = new Pool({
+        connectionString: env.DATABASE_URL,
+        max: 5,
+        ssl: { rejectUnauthorized: true, ...(sslCa ? { ca: sslCa } : {}) },
+        connectionTimeoutMillis: 10_000,
+        query_timeout: 30_000,
+      });
       await pool.query(postgresSchema);
       await migrateLegacySqlite(pool);
       return;

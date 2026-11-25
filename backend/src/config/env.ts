@@ -51,6 +51,10 @@ const envSchema = z.object({
     (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
     z.string().trim().url().refine((value) => /^postgres(ql)?:\/\//i.test(value), 'Must be a PostgreSQL connection URL').optional(),
   ),
+  DATABASE_SSL_CA_BASE64: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'Must be a base64-encoded PEM certificate').optional(),
+  ),
   DATABASE_PATH: z.string().trim().min(1).default('./storage/case-study-tool.sqlite'),
   SQLITE_MIGRATION_PATH: z.preprocess(
     (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
@@ -86,6 +90,7 @@ const envSchema = z.object({
   }
   if (values.NODE_ENV === 'production') {
     if (!values.DATABASE_URL) context.addIssue({ code: 'custom', path: ['DATABASE_URL'], message: 'DATABASE_URL must point to the Supabase Postgres database in production' });
+    if (!values.DATABASE_SSL_CA_BASE64) context.addIssue({ code: 'custom', path: ['DATABASE_SSL_CA_BASE64'], message: 'Set the Supabase database CA certificate so TLS can verify the server' });
     if (!values.SUPABASE_URL || !hasStorageKey) {
       context.addIssue({ code: 'custom', path: ['SUPABASE_URL'], message: 'SUPABASE_URL and a Supabase secret key are required for production file storage' });
     }

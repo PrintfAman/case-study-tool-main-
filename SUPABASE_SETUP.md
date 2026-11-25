@@ -6,8 +6,15 @@ The backend uses Supabase Postgres for projects, analyses, fields, chat history,
 
 1. Create a Supabase project and save its database password.
 2. In **Connect**, copy the **Session pooler** URI for an IPv4 hosted backend such as Render. Put that full URI in Render as `DATABASE_URL`; replace the password placeholder with the database password. Keep the username and host exactly as Supabase provides them.
-3. Copy the Project URL shown on the dashboard. In **Project Settings → API Keys**, copy the server-side **Secret key** (`sb_secret_...`). The backend also accepts the legacy `service_role` key if that is all the project shows.
-4. In **Storage**, create a bucket named `case-study-files` and make it **private**.
+3. In **Database → Settings → SSL Configuration**, download the database server certificate. Convert the downloaded file to a single-line Base64 value in PowerShell, replacing the path with its actual location:
+
+   ```powershell
+   [Convert]::ToBase64String([System.IO.File]::ReadAllBytes('C:\path\to\prod-ca-2021.crt'))
+   ```
+
+   Save that output in Render as `DATABASE_SSL_CA_BASE64`. The backend uses it to verify the TLS certificate while connecting.
+4. Copy the Project URL shown on the dashboard. In **Project Settings → API Keys**, copy the server-side **Secret key** (`sb_secret_...`). The backend also accepts the legacy `service_role` key if that is all the project shows.
+5. In **Storage**, create a bucket named `case-study-files` and make it **private**.
 
 The backend creates its Postgres tables and indexes at startup. The frontend needs no Supabase keys and should not receive any `SUPABASE_*` or `DATABASE_URL` variables.
 
@@ -18,6 +25,7 @@ Add these to the **backend Web Service** in Render:
 | Variable | Value |
 | --- | --- |
 | `DATABASE_URL` | Supabase Session pooler connection URI |
+| `DATABASE_SSL_CA_BASE64` | Base64-encoded Supabase database CA certificate |
 | `SUPABASE_URL` | Supabase Project URL |
 | `SUPABASE_SECRET_KEY` | Server-side Secret key (`sb_secret_...`); legacy `SUPABASE_SERVICE_ROLE_KEY` is also accepted |
 | `SUPABASE_STORAGE_BUCKET` | `case-study-files` |
