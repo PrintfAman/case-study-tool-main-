@@ -25,7 +25,7 @@ function parseCookieHeader(header: string | undefined): Record<string, string> {
   for (const part of (header ?? '').split(';')) {
     const index = part.indexOf('=');
     if (index > 0) {
-      result[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+      result[part.slice(0, index).trim()] = part.slice(index + 1).trim();
     }
   }
   return result;
@@ -37,7 +37,7 @@ export interface SessionUser {
   name: string;
 }
 
-export function getSessionUser(req: Request): SessionUser | null {
+function getVerifiedSessionId(req: Request): string | null {
   const cookie = parseCookieHeader(req.headers.cookie)[SESSION_COOKIE];
   if (!cookie) return null;
 
@@ -54,7 +54,12 @@ export function getSessionUser(req: Request): SessionUser | null {
   } catch {
     signaturesMatch = false;
   }
-  if (!signaturesMatch) return null;
+  return signaturesMatch ? sessionId : null;
+}
+
+export function getSessionUser(req: Request): SessionUser | null {
+  const sessionId = getVerifiedSessionId(req);
+  if (!sessionId) return null;
 
   const row = database.prepare(`
     SELECT u.id, u.email, u.name
@@ -70,6 +75,7 @@ export function createSession(res: Response, userId: string): void {
   const id = randomBytes(32).toString('base64url');
   const now = new Date();
   const expires = new Date(now.getTime() + env.SESSION_DAYS * 86400 * 1000);
+  database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now.toISOString());
   database.prepare(`
     INSERT INTO sessions (id, user_id, expires_at, created_at)
     VALUES (?, ?, ?, ?)
@@ -78,13 +84,8 @@ export function createSession(res: Response, userId: string): void {
 }
 
 export function deleteSession(req: Request, res: Response): void {
-  const cookie = parseCookieHeader(req.headers.cookie)[SESSION_COOKIE];
-  if (cookie) {
-    const separator = cookie.lastIndexOf('.');
-    if (separator > 0) {
-      database.prepare('DELETE FROM sessions WHERE id = ?').run(cookie.slice(0, separator));
-    }
-  }
+  const sessionId = getVerifiedSessionId(req);
+  if (sessionId) database.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   res.setHeader('Set-Cookie', clearSessionCookie());
 }
 

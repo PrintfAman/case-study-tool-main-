@@ -14,3 +14,14 @@ export interface CreateProjectInput {
   websiteUrl?: string | null;
   githubUrl?: string | null;
 }
+
+export interface CaseStudySummary {
+  id: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaseStudyVersion extends CaseStudySummary {
+  content: Record<string, unknown>;
+}

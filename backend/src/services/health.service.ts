@@ -13,7 +13,7 @@ import { databaseHealth } from '../storage/database';
  */
 
 /** Where a dependency currently stands. */
-export type DependencyStatus = 'up' | 'down' | 'not_configured';
+export type DependencyStatus = 'up' | 'down' | 'configured' | 'not_configured';
 
 export interface DependencyCheck {
   name: string;
@@ -61,9 +61,8 @@ function readAppVersion(): string {
 }
 
 /**
- * Dependency checks. PostgreSQL is wired up in Phase 2 - until then this
- * honestly reports `not_configured` rather than pretending to be connected.
- * The response shape will not change when the real check is added.
+ * Credential configuration is reported separately from provider reachability.
+ * An API key being present does not prove that a third-party service is online.
  */
 function buildDependencyChecks(): DependencyCheck[] {
   const database = databaseHealth();
@@ -72,6 +71,18 @@ function buildDependencyChecks(): DependencyCheck[] {
       name: 'database',
       status: database.up ? 'up' : 'down',
       detail: database.detail,
+    },
+    {
+      name: 'groq_synthesis',
+      status: env.GROQ_API_KEY ? 'configured' : 'not_configured',
+      detail: env.GROQ_API_KEY ? 'Credential is set; provider reachability is checked during analysis.' : 'No GROQ_API_KEY; evidence-based fallback reports remain available.',
+    },
+    {
+      name: 'tavily_competitor_research',
+      status: env.TAVILY_API_KEY ? 'configured' : 'not_configured',
+      detail: env.TAVILY_API_KEY
+        ? 'Credential is set; provider reachability is checked during analysis.'
+        : 'No TAVILY_API_KEY; independent competitor research is unavailable.',
     },
   ];
 }

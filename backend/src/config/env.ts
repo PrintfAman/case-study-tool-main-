@@ -62,6 +62,7 @@ const envSchema = z.object({
   GROQ_MAX_TOKENS: z.coerce.number().int().min(100).max(16000).default(8000),
   TAVILY_API_KEY: z.string().trim().optional(),
   REPORT_STORAGE_DIR: z.string().trim().min(1).default('./storage/reports'),
+  UPLOAD_STORAGE_DIR: z.string().trim().min(1).default('./storage/uploads'),
 });
 
 /** The raw, validated result. If this throws, the app must not start. */
@@ -76,6 +77,12 @@ if (!parsed.success) {
     console.error(`  - ${key}: ${issue.message}`);
   }
   console.error('\nCheck backend/.env against backend/.env.example\n');
+  process.exit(1);
+}
+
+const configuredSessionSecret = process.env.SESSION_SECRET?.trim();
+if (parsed.data.NODE_ENV === 'production' && (!configuredSessionSecret || /^replace[-_]/i.test(configuredSessionSecret) || configuredSessionSecret === 'development-only-change-this-session-secret')) {
+  console.error('\n[env] SESSION_SECRET must be explicitly set to a non-placeholder value in production.\n');
   process.exit(1);
 }
 

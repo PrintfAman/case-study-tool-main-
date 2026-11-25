@@ -7,12 +7,14 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/api.test.ts",
+    "smoke:live": "tsx live-analysis-smoke.mjs",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

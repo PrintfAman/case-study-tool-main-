@@ -23,13 +23,14 @@ import { SkeletonLines } from './SkeletonLines';
 const STATUS_LABEL: Record<DependencyStatus, string> = {
   up: 'up',
   down: 'down',
+  configured: 'configured',
   not_configured: 'not configured',
 };
 
 function StatusBadge({ status }: { status: DependencyStatus }) {
   if (status === 'up') return <Badge tone="solid">{STATUS_LABEL.up}</Badge>;
   if (status === 'down') return <Badge tone="accent">{STATUS_LABEL.down}</Badge>;
-  return <Badge tone="muted">{STATUS_LABEL.not_configured}</Badge>;
+  return <Badge tone="muted">{STATUS_LABEL[status]}</Badge>;
 }
 
 export interface DependenciesPanelProps {
@@ -44,7 +45,7 @@ export function DependenciesPanel({ health, className }: DependenciesPanelProps)
     <Panel
       label="dependencies"
       title="Service checks"
-      actions={<Badge tone="muted">phase 1 scope</Badge>}
+      actions={<Badge tone="muted">Live checks</Badge>}
       className={className}
     >
       {status === 'loading' ? <SkeletonLines rows={2} rowHeight="h-8" /> : null}

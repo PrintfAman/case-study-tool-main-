@@ -4,6 +4,8 @@ import { healthRouter } from './health.routes';
 import { projectsRouter } from './projects.routes';
 import { analysisRouter } from './analysis.routes';
 import { reportsRouter } from './reports.routes';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireAllowedOrigin } from '../middleware/origin.middleware';
 
 /**
  * THE V1 API ROOT
@@ -23,7 +25,8 @@ import { reportsRouter } from './reports.routes';
 export const apiRouter = Router();
 
 apiRouter.use('/health', healthRouter);
+apiRouter.use(requireAllowedOrigin);
 apiRouter.use('/auth', authRouter);
-apiRouter.use('/projects', projectsRouter);
-apiRouter.use('/analysis', analysisRouter);
-apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/projects', requireAuth, projectsRouter);
+apiRouter.use('/analysis', requireAuth, analysisRouter);
+apiRouter.use('/reports', requireAuth, reportsRouter);

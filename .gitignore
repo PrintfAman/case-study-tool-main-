@@ -28,8 +28,8 @@ coverage/
 .nyc_output/
 
 # ---------- Generated artifacts ----------
-# PDFs produced by Puppeteer in later phases
-storage/
+# Local SQLite database and generated reports
+/backend/storage/
 reports/*.pdf
 uploads/
 temp/

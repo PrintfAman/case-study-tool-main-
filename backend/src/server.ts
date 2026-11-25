@@ -1,6 +1,7 @@
 import type { Server } from 'node:http';
 import { createApp } from './app';
 import { env } from './config/env';
+import { closeDatabase } from './storage/database';
 import { logger } from './utils/logger';
 
 /**
@@ -70,6 +71,7 @@ function shutdown(signal: string): void {
       process.exit(1);
     }
 
+    closeDatabase();
     logger.info('Server closed cleanly');
     process.exit(0);
   });

@@ -4,7 +4,7 @@
  */
 
 /** Where a dependency currently stands. */
-export type DependencyStatus = 'up' | 'down' | 'not_configured';
+export type DependencyStatus = 'up' | 'down' | 'configured' | 'not_configured';
 
 export interface DependencyCheck {
   name: string;
