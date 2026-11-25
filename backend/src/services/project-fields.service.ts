@@ -337,7 +337,7 @@ function inferFields(project: { id: string; name: string; websiteUrl: string | n
   return [...fields, ...suggestions];
 }
 
-export function seedProjectFields(projectId: string, project: { name: string; websiteUrl: string | null; githubUrl: string | null }): void {
+export async function seedProjectFields(projectId: string, project: { name: string; websiteUrl: string | null; githubUrl: string | null }): Promise<void> {
   const now = new Date().toISOString();
   const initial: Array<{ key: string; category: FieldCategory; name: string; type: FieldType; value: string }> = [
     { key: 'project_name', category: 'general', name: 'Project Name', type: 'text', value: project.name },
@@ -351,12 +351,12 @@ export function seedProjectFields(projectId: string, project: { name: string; we
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'User', 1, 1, 1, ?, ?, ?)
   `);
   for (const item of initial) {
-    insert.run(randomUUID(), projectId, item.key, item.category, item.name, item.type, JSON.stringify(item.value), null, now, now);
+    await insert.run(randomUUID(), projectId, item.key, item.category, item.name, item.type, JSON.stringify(item.value), null, now, now);
   }
 }
 
 /** Upserts observed fields, retaining user values while keeping the latest AI value restorable. */
-export function refreshProjectFields(project: { id: string; name: string; websiteUrl: string | null; githubUrl: string | null }, content: Record<string, unknown>): void {
+export async function refreshProjectFields(project: { id: string; name: string; websiteUrl: string | null; githubUrl: string | null }, content: Record<string, unknown>): Promise<void> {
   const now = new Date().toISOString();
   const candidates = inferFields(project, content);
   const getExisting = database.prepare('SELECT * FROM project_fields WHERE project_id = ? AND field_key = ?');
@@ -384,12 +384,12 @@ export function refreshProjectFields(project: { id: string; name: string; websit
   `);
   let order = 0;
   for (const candidate of candidates) {
-      const existing = getExisting.get(project.id, candidate.key) as ProjectFieldRow | undefined;
+      const existing = await getExisting.get(project.id, candidate.key) as ProjectFieldRow | undefined;
       const valueJson = JSON.stringify(candidate.value);
       if (!existing) {
         const userSeed = candidate.source === 'User';
         const suggestionStatus = candidate.suggested ? 'pending' : null;
-        insert.run(
+        await insert.run(
           randomUUID(), project.id, candidate.key, candidate.category, candidate.name, candidate.type,
           valueJson, userSeed ? null : valueJson, candidate.source, candidate.confidence,
           userSeed ? null : candidate.source, candidate.confidence, candidate.generatedBy ?? null,
@@ -397,7 +397,7 @@ export function refreshProjectFields(project: { id: string; name: string; websit
           suggestionStatus, userSeed ? 1 : 0, now, now,
         );
       } else if (candidate.source !== 'User' && !['rejected', 'accepted', 'deleted'].includes(existing.suggestion_status ?? '')) {
-        updateAi.run(
+        await updateAi.run(
           candidate.category, candidate.name, candidate.type, valueJson, candidate.source, candidate.confidence,
           valueJson, candidate.source, candidate.confidence, candidate.generatedBy ?? null, now,
           candidate.description ?? '', JSON.stringify(candidate.options ?? []), candidate.suggested ? 1 : 0,

@@ -13,17 +13,17 @@ function param(req: Request, name: string): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
-export function listProjectChat(req: Request, res: Response): void {
+export async function listProjectChat(req: Request, res: Response): Promise<void> {
   const projectId = param(req, 'id');
-  ensureProjectExists(projectId);
-  res.status(200).json(successResponse({ messages: getProjectChatHistory(projectId) }, 'Project chat history retrieved'));
+  await ensureProjectExists(projectId);
+  res.status(200).json(successResponse({ messages: await getProjectChatHistory(projectId) }, 'Project chat history retrieved'));
 }
 
 export async function sendProjectChatMessage(req: Request, res: Response): Promise<void> {
   const projectId = param(req, 'id');
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const { question } = z.object({ question: z.string().trim().min(1).max(2_000) }).strict().parse(req.body);
-  const conversationHistory = getProjectChatHistory(projectId).slice(-8);
+  const conversationHistory = (await getProjectChatHistory(projectId)).slice(-8);
   const retrievalQuery = [
     ...conversationHistory.slice(-4).map((message) => `${message.role}: ${message.content.slice(0, 500)}`),
     `Current question: ${question}`,
@@ -36,21 +36,16 @@ export async function sendProjectChatMessage(req: Request, res: Response): Promi
   const userMessageId = randomUUID();
   const assistantMessageId = randomUUID();
 
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    database.prepare(`
+  await database.transaction(async () => {
+    await database.prepare(`
       INSERT INTO project_chat_messages (id, project_id, role, content, citations_json, created_at)
       VALUES (?, ?, 'user', ?, '[]', ?)
     `).run(userMessageId, projectId, question, now);
-    database.prepare(`
+    await database.prepare(`
       INSERT INTO project_chat_messages (id, project_id, role, content, citations_json, created_at)
       VALUES (?, ?, 'assistant', ?, ?, ?)
     `).run(assistantMessageId, projectId, answer, JSON.stringify(citations), now);
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
+  });
 
   res.status(200).json(successResponse({ answer, citations, userMessageId, assistantMessageId, createdAt: now }, 'Project answer generated from retrieved evidence'));
 }
@@ -80,9 +75,9 @@ function stringForEdit(value: unknown): string {
 export async function editCaseStudySection(req: Request, res: Response): Promise<void> {
   const projectId = param(req, 'id');
   const caseStudyId = param(req, 'caseStudyId');
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const input = sectionEditSchema.parse(req.body);
-  const row = database.prepare(`
+  const row = await database.prepare(`
     SELECT c.id, c.status, c.content_json
     FROM case_studies c
     WHERE c.project_id = ? AND c.id = ?
@@ -154,7 +149,7 @@ export async function editCaseStudySection(req: Request, res: Response): Promise
 
   const now = new Date().toISOString();
   const nextId = randomUUID();
-  database.prepare(`
+  await database.prepare(`
     INSERT INTO case_studies (id, project_id, status, content_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(nextId, projectId, row.status, JSON.stringify(nextContent), now, now);

@@ -9,10 +9,10 @@ const discoveryInputSchema = z.object({ refresh: z.boolean().optional() }).stric
 
 export async function discoverProjectFields(req: Request, res: Response): Promise<void> {
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const input = discoveryInputSchema.parse(req.body ?? {});
   const result = await ensureProjectInformation(projectId, input.refresh ?? false);
-  const fieldCount = (database.prepare('SELECT COUNT(*) AS count FROM project_fields WHERE project_id = ?').get(projectId) as { count: number }).count;
+  const fieldCount = (await database.prepare('SELECT COUNT(*) AS count FROM project_fields WHERE project_id = ?').get(projectId) as { count: number }).count;
   res.status(200).json(successResponse({
     projectId,
     status: result.status,

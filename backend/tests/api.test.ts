@@ -108,7 +108,7 @@ test('public project workflow, reports, rate limits, and input safety', async ()
   assert.equal(created.status, 201);
   assert.equal(created.headers.get('set-cookie'), null, 'public project creation does not create a session cookie');
   const project = (await json(created)).data as { id: string };
-  assert.equal((database.prepare('SELECT user_id FROM projects WHERE id = ?').get(project.id) as { user_id: string | null }).user_id, null);
+  assert.equal(((await database.prepare('SELECT user_id FROM projects WHERE id = ?').get(project.id)) as { user_id: string | null }).user_id, null);
   const publicProjects = await request('/projects/');
   assert.equal((await json(publicProjects)).data.projects.some((item: { id: string }) => item.id === project.id), true, 'project list is available without a session');
 
@@ -130,8 +130,8 @@ test('public project workflow, reports, rate limits, and input safety', async ()
     ...fieldAnalysis,
     projectClassification: classifyProjectType({ project: { name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, website: fieldAnalysis.evidence.website, github: fieldAnalysis.evidence.github }),
   };
-  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, analyzedFields);
-  database.prepare(`
+  await refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, analyzedFields);
+  await database.prepare(`
     INSERT INTO project_source_analyses (project_id, status, evidence_json, field_analysis_json, warnings_json, updated_at)
     VALUES (?, 'completed', ?, ?, '[]', ?)
   `).run(project.id, JSON.stringify(analyzedFields.evidence), JSON.stringify(analyzedFields), new Date().toISOString());
@@ -175,7 +175,7 @@ test('public project workflow, reports, rate limits, and input safety', async ()
   const updatedEvidence = structuredClone(analyzedFields);
   updatedEvidence.evidence.website.pages[0]!.metadata.siteName = 'Acme Labs';
   updatedEvidence.projectClassificationSource = 'Groq';
-  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, updatedEvidence);
+  await refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, updatedEvidence);
   const refreshedFields = (await json(await request(`/projects/${project.id}/fields`, {  }))).data.fields as Array<Record<string, any>>;
   const refreshedCompany = refreshedFields.find((field) => field.key === 'company_name');
   assert.equal(refreshedCompany?.value, 'Owner corrected company');
@@ -281,11 +281,11 @@ test('public project workflow, reports, rate limits, and input safety', async ()
   const olderId = randomUUID();
   const newerId = randomUUID();
   const olderDate = new Date(Date.now() - 86_400_000).toISOString();
-  database.prepare(`
+  await database.prepare(`
     INSERT INTO case_studies (id, project_id, status, content_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(olderId, project.id, 'completed', JSON.stringify({ executiveSummary: 'Earlier saved report.' }), olderDate, olderDate);
-  database.prepare(`
+  await database.prepare(`
     INSERT INTO case_studies (id, project_id, status, content_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(newerId, project.id, 'completed', JSON.stringify({ executiveSummary: 'Evidence-backed test report.', competitorComparison: [{ competitor: 'Sample alternative', source: 'https://competitor.example' }] }), now, now);
@@ -322,7 +322,7 @@ test('public project workflow, reports, rate limits, and input safety', async ()
   const removedData = (await json(removedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
   assert.equal(Object.hasOwn(removedData.content, 'competitorComparison'), false);
   await rebuildProjectKnowledgeIndex(project.id);
-  const indexedLatestReport = database.prepare(`
+  const indexedLatestReport = await database.prepare(`
     SELECT content FROM project_knowledge_chunks
     WHERE project_id = ? AND source_type = 'analysis' AND source_id LIKE ?
   `).all(project.id, `case-study-report:${removedData.caseStudyId}:%`) as Array<{ content: string }>;

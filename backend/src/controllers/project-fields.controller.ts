@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, extname } from 'node:path';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { env } from '../config/env';
 import { database } from '../storage/database';
 import { AppError } from '../utils/app-error';
 import { successResponse } from '../utils/api-response';
@@ -14,13 +12,14 @@ import {
   type ProjectFieldRow,
 } from '../services/project-fields.service';
 import { ensureProjectExists } from '../utils/require-project';
+import { deleteStoredObject, downloadStoredObject, uploadStoredObject } from '../services/supabase-storage.service';
 
 const idParam = (value: string | string[] | undefined): string => Array.isArray(value) ? value[0] ?? '' : value ?? '';
 const projectIdFor = (req: Request) => idParam(req.params.projectId);
 const fieldIdFor = (req: Request) => idParam(req.params.fieldId);
 
-function getField(projectId: string, fieldId: string): ProjectFieldRow {
-  const row = database.prepare("SELECT * FROM project_fields WHERE project_id = ? AND id = ? AND visibility <> 'deleted'").get(projectId, fieldId) as ProjectFieldRow | undefined;
+async function getField(projectId: string, fieldId: string): Promise<ProjectFieldRow> {
+  const row = await database.prepare("SELECT * FROM project_fields WHERE project_id = ? AND id = ? AND visibility <> 'deleted'").get(projectId, fieldId) as ProjectFieldRow | undefined;
   if (!row) throw AppError.notFound('Project field');
   return row;
 }
@@ -93,10 +92,10 @@ const createSchema = z.object({
   options: z.array(z.string().trim().min(1).max(100)).max(100).optional().default([]),
 });
 
-export function listProjectFields(req: Request, res: Response): void {
+export async function listProjectFields(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const rows = database.prepare(`
+  await ensureProjectExists(projectId);
+  const rows = await database.prepare(`
     SELECT * FROM project_fields
     WHERE project_id = ? AND visibility <> 'deleted'
     ORDER BY pinned DESC, category, display_order, field_name
@@ -104,9 +103,9 @@ export function listProjectFields(req: Request, res: Response): void {
   res.status(200).json(successResponse({ fields: rows.map(serializeProjectField) }, 'Project fields retrieved'));
 }
 
-export function createProjectField(req: Request, res: Response): void {
+export async function createProjectField(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const input = createSchema.parse(req.body);
   const effectiveValue = Object.hasOwn(req.body as object, 'value') ? input.value : input.defaultValue ?? null;
   const effectiveEditable = input.readOnly ? false : input.editable;
@@ -114,7 +113,7 @@ export function createProjectField(req: Request, res: Response): void {
   const defaultValue = input.defaultValue === undefined ? null : validateFieldValue(input.fieldType, input.defaultValue, input.options, false);
   const now = new Date().toISOString();
   const id = randomUUID();
-  database.prepare(`
+  await database.prepare(`
     INSERT INTO project_fields (
       id, project_id, field_key, category, field_name, field_type, value_json, source,
       editable, required, read_only, default_value_json, description, options_json,
@@ -126,14 +125,14 @@ export function createProjectField(req: Request, res: Response): void {
     defaultValue === null ? null : JSON.stringify(defaultValue), input.description, JSON.stringify(input.options),
     input.displayOrder, input.visibility, input.pinned ? 1 : 0, input.manualNotes, null, now, now,
   );
-  const row = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(id) as unknown as ProjectFieldRow;
+  const row = await database.prepare('SELECT * FROM project_fields WHERE id = ?').get(id) as unknown as ProjectFieldRow;
   res.status(201).json(successResponse({ field: serializeProjectField(row) }, 'Custom field created'));
 }
 
-export function updateProjectField(req: Request, res: Response): void {
+export async function updateProjectField(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   const schema = z.object({
     fieldName: z.string().trim().min(1).max(120).optional(),
     fieldType: z.enum(FIELD_TYPES).optional(),
@@ -170,7 +169,7 @@ export function updateProjectField(req: Request, res: Response): void {
   const userEdited = hasValue ? true : Boolean(row.user_edited);
   const source = hasValue ? 'User' : row.source;
   const confidence = hasValue ? null : row.confidence_score;
-  database.prepare(`
+  await database.prepare(`
     UPDATE project_fields SET
       field_name = ?, field_type = ?, value_json = ?, source = ?, confidence_score = ?,
       editable = ?, required = ?, read_only = ?, default_value_json = ?, description = ?,
@@ -185,7 +184,7 @@ export function updateProjectField(req: Request, res: Response): void {
     schema.visibility ?? row.visibility, (schema.pinned ?? Boolean(row.pinned)) ? 1 : 0,
     schema.manualNotes ?? row.manual_notes, userEdited ? 1 : 0, new Date().toISOString(), row.id, projectId,
   );
-  const updated = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
+  const updated = await database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
   res.status(200).json(successResponse({ field: serializeProjectField(updated) }, 'Project field updated'));
 }
 
@@ -196,90 +195,80 @@ function parseJsonForController(value: string | null): unknown {
 
 export async function deleteProjectField(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   if (row.field_key.startsWith('custom:')) {
-    database.prepare('DELETE FROM project_fields WHERE id = ? AND project_id = ?').run(row.id, projectId);
-    await removeAttachmentFile(parseJsonForController(row.value_json));
+    await database.prepare('DELETE FROM project_fields WHERE id = ? AND project_id = ?').run(row.id, projectId);
+    await removeAttachmentFile(projectId, parseJsonForController(row.value_json));
   } else {
-    database.prepare(`UPDATE project_fields SET visibility = 'deleted', is_suggested = 0, suggestion_status = 'deleted', user_edited = 1, updated_at = ? WHERE id = ? AND project_id = ?`).run(new Date().toISOString(), row.id, projectId);
+    await database.prepare(`UPDATE project_fields SET visibility = 'deleted', is_suggested = 0, suggestion_status = 'deleted', user_edited = 1, updated_at = ? WHERE id = ? AND project_id = ?`).run(new Date().toISOString(), row.id, projectId);
   }
   res.status(200).json(successResponse(null, 'Project field removed'));
 }
 
-export function restoreAiProjectField(req: Request, res: Response): void {
+export async function restoreAiProjectField(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   if (!row.ai_value_json || !row.ai_source) throw new AppError('This field has no saved AI value to restore', { statusCode: 409, code: 'CONFLICT' });
-  database.prepare(`
+  await database.prepare(`
     UPDATE project_fields SET value_json = ai_value_json, source = ai_source,
       confidence_score = ai_confidence_score, user_edited = 0, updated_at = ?
     WHERE id = ? AND project_id = ?
   `).run(new Date().toISOString(), row.id, projectId);
-  const updated = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
+  const updated = await database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
   res.status(200).json(successResponse({ field: serializeProjectField(updated) }, 'AI value restored'));
 }
 
-export function updateFieldSuggestion(req: Request, res: Response): void {
+export async function updateFieldSuggestion(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   if (!row.is_suggested || row.suggestion_status !== 'pending') throw new AppError('Suggestion is no longer pending', { statusCode: 409, code: 'CONFLICT' });
   const { action } = z.object({ action: z.enum(['accept', 'reject']) }).parse(req.body);
-  database.prepare(`
+  await database.prepare(`
     UPDATE project_fields SET is_suggested = 0, suggestion_status = ?, visibility = ?, updated_at = ?
     WHERE id = ? AND project_id = ?
   `).run(action === 'accept' ? 'accepted' : 'rejected', action === 'accept' ? 'visible' : 'hidden', new Date().toISOString(), row.id, projectId);
-  const updated = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
+  const updated = await database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
   res.status(200).json(successResponse({ field: serializeProjectField(updated) }, `Suggestion ${action}ed`));
 }
 
-export function reorderProjectFields(req: Request, res: Response): void {
+export async function reorderProjectFields(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const { fieldIds } = z.object({ fieldIds: z.array(z.string().uuid()).max(1000) }).parse(req.body);
   const update = database.prepare('UPDATE project_fields SET display_order = ?, updated_at = ? WHERE id = ? AND project_id = ? AND visibility <> \'deleted\'');
-  const ids = database.prepare('SELECT id FROM project_fields WHERE project_id = ? AND visibility <> \'deleted\'').all(projectId) as Array<{ id: string }>;
+  const ids = await database.prepare('SELECT id FROM project_fields WHERE project_id = ? AND visibility <> \'deleted\'').all(projectId) as Array<{ id: string }>;
   const allowed = new Set(ids.map((item) => item.id));
   if (fieldIds.some((id) => !allowed.has(id)) || new Set(fieldIds).size !== fieldIds.length) {
     throw new AppError('Field order contains invalid or duplicate field IDs', { statusCode: 400, code: 'VALIDATION_ERROR' });
   }
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    fieldIds.forEach((id, index) => update.run(index, new Date().toISOString(), id, projectId));
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
+  await database.transaction(async () => {
+    for (const [index, id] of fieldIds.entries()) await update.run(index, new Date().toISOString(), id, projectId);
+  });
   res.status(200).json(successResponse(null, 'Project fields reordered'));
 }
 
-export function bulkUpdateProjectFields(req: Request, res: Response): void {
+export async function bulkUpdateProjectFields(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
+  await ensureProjectExists(projectId);
   const { updates } = z.object({
     updates: z.array(z.object({ fieldId: z.string().uuid(), value: z.unknown() })).min(1).max(100),
   }).parse(req.body);
   if (new Set(updates.map((update) => update.fieldId)).size !== updates.length) throw new AppError('Each field may only appear once in a bulk update', { statusCode: 400, code: 'VALIDATION_ERROR' });
-  database.exec('BEGIN IMMEDIATE');
-  try {
+  await database.transaction(async () => {
     for (const update of updates) {
-      const row = getField(projectId, update.fieldId);
+      const row = await getField(projectId, update.fieldId);
       if (!row.editable || row.read_only) throw new AppError(`${row.field_name} is read only`, { statusCode: 403, code: 'FORBIDDEN' });
       const value = validateFieldValue(row.field_type, update.value, JSON.parse(row.options_json) as string[], Boolean(row.required));
-      database.prepare(`
+      await database.prepare(`
         UPDATE project_fields SET value_json = ?, source = 'User', confidence_score = NULL,
           user_edited = 1, updated_at = ? WHERE id = ? AND project_id = ?
       `).run(JSON.stringify(value), new Date().toISOString(), row.id, projectId);
     }
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
-  const rows = database.prepare("SELECT * FROM project_fields WHERE project_id = ? AND visibility <> 'deleted' ORDER BY pinned DESC, category, display_order, field_name").all(projectId) as unknown as ProjectFieldRow[];
+  });
+  const rows = await database.prepare("SELECT * FROM project_fields WHERE project_id = ? AND visibility <> 'deleted' ORDER BY pinned DESC, category, display_order, field_name").all(projectId) as unknown as ProjectFieldRow[];
   res.status(200).json(successResponse({ fields: rows.map(serializeProjectField) }, 'Project fields updated'));
 }
 
@@ -300,16 +289,16 @@ function parseAttachment(value: unknown): AttachmentValue | null {
   return candidate as AttachmentValue;
 }
 
-async function removeAttachmentFile(value: unknown): Promise<void> {
+async function removeAttachmentFile(projectId: string, value: unknown): Promise<void> {
   const attachment = parseAttachment(value);
   if (!attachment) return;
-  await rm(join(resolve(env.UPLOAD_STORAGE_DIR), `${attachment.attachmentId}${attachment.extension}`), { force: true });
+  await deleteStoredObject(`${projectId}/attachments/${attachment.attachmentId}${attachment.extension}`);
 }
 
 export async function uploadProjectFieldAttachment(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   if (row.field_type !== 'file_attachment' || !row.editable || row.read_only) {
     throw new AppError('This field does not accept file uploads', { statusCode: 403, code: 'FORBIDDEN' });
   }
@@ -322,36 +311,34 @@ export async function uploadProjectFieldAttachment(req: Request, res: Response):
   const originalName = basename(requestedName).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 160) || 'attachment';
   const extension = extname(originalName).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 11);
   const attachmentId = randomUUID();
-  const storagePath = join(resolve(env.UPLOAD_STORAGE_DIR), `${attachmentId}${extension}`);
+  const objectPath = `${projectId}/attachments/${attachmentId}${extension}`;
   const contentTypeHeader = req.get('content-type') ?? 'application/octet-stream';
   const contentType = /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(contentTypeHeader) ? contentTypeHeader.toLowerCase() : 'application/octet-stream';
   const value: AttachmentValue = { attachmentId, fileName: originalName, extension, contentType, size: body.byteLength };
-  await mkdir(resolve(env.UPLOAD_STORAGE_DIR), { recursive: true });
-  await writeFile(storagePath, body, { flag: 'wx' });
+  await uploadStoredObject(objectPath, body, contentType);
   try {
-    database.prepare(`
+    await database.prepare(`
       UPDATE project_fields SET value_json = ?, source = 'User', confidence_score = NULL,
         user_edited = 1, updated_at = ? WHERE id = ? AND project_id = ?
     `).run(JSON.stringify(value), new Date().toISOString(), row.id, projectId);
   } catch (error) {
-    await rm(storagePath, { force: true });
+    await deleteStoredObject(objectPath);
     throw error;
   }
-  await removeAttachmentFile(parseJsonForController(row.value_json));
-  const updated = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
+  await removeAttachmentFile(projectId, parseJsonForController(row.value_json));
+  const updated = await database.prepare('SELECT * FROM project_fields WHERE id = ?').get(row.id) as unknown as ProjectFieldRow;
   res.status(201).json(successResponse({ field: serializeProjectField(updated) }, 'File attached'));
 }
 
 export async function downloadProjectFieldAttachment(req: Request, res: Response): Promise<void> {
   const projectId = projectIdFor(req);
-  ensureProjectExists(projectId);
-  const row = getField(projectId, fieldIdFor(req));
+  await ensureProjectExists(projectId);
+  const row = await getField(projectId, fieldIdFor(req));
   const attachment = parseAttachment(parseJsonForController(row.value_json));
   const attachmentId = idParam(req.params.attachmentId);
   if (row.field_type !== 'file_attachment' || !attachment || attachment.attachmentId !== attachmentId) throw AppError.notFound('Attachment');
-  const filePath = join(resolve(env.UPLOAD_STORAGE_DIR), `${attachment.attachmentId}${attachment.extension}`);
-  let bytes: Buffer;
-  try { bytes = await readFile(filePath); } catch { throw AppError.notFound('Attachment'); }
+  const bytes = await downloadStoredObject(`${projectId}/attachments/${attachment.attachmentId}${attachment.extension}`);
+  if (!bytes) throw AppError.notFound('Attachment');
   const safeName = attachment.fileName.replace(/["\\\r\n]/g, '_');
   res.status(200);
   res.setHeader('Content-Type', attachment.contentType);

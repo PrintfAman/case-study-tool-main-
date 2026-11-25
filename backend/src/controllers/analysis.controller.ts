@@ -16,10 +16,10 @@ interface ProjectRow {
 
 export async function runAnalysis(req: Request, res: Response): Promise<void> {
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const project = database.prepare('SELECT id, name, website_url, github_url, status FROM projects WHERE id = ?').get(projectId) as unknown as ProjectRow | undefined;
+  const project = await database.prepare('SELECT id, name, website_url, github_url, status FROM projects WHERE id = ?').get(projectId) as unknown as ProjectRow | undefined;
   if (!project) throw AppError.notFound('Project');
 
-  const claimed = database.prepare("UPDATE projects SET status = 'analyzing', updated_at = ? WHERE id = ? AND status <> 'analyzing'").run(new Date().toISOString(), project.id);
+  const claimed = await database.prepare("UPDATE projects SET status = 'analyzing', updated_at = ? WHERE id = ? AND status <> 'analyzing'").run(new Date().toISOString(), project.id);
   if (claimed.changes === 0) throw new AppError('Analysis is already running for this project', { statusCode: 409, code: 'CONFLICT' });
 
   try {
@@ -27,7 +27,7 @@ export async function runAnalysis(req: Request, res: Response): Promise<void> {
     // created. Reuse that evidence here so the user can review/finalize fields
     // before this click creates a case-study version.
     const sourceInfo = await ensureProjectInformation(project.id);
-    const finalizedProjectInformation = getFinalizedProjectInformation(project.id);
+    const finalizedProjectInformation = await getFinalizedProjectInformation(project.id);
     const sourceWarnings = [...sourceInfo.warnings];
 
     const content = await synthesizeCaseStudy({
@@ -48,29 +48,24 @@ export async function runAnalysis(req: Request, res: Response): Promise<void> {
       finalizedProjectInformation,
       sourceWarnings,
     };
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      database.prepare(`
+    await database.transaction(async () => {
+      await database.prepare(`
         INSERT INTO case_studies (id, project_id, status, content_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, project.id, status, JSON.stringify(persistedContent), now, now);
-      database.prepare('UPDATE projects SET status = ?, updated_at = ? WHERE id = ?').run(status, now, project.id);
-      database.exec('COMMIT');
-    } catch (error) {
-      database.exec('ROLLBACK');
-      throw error;
-    }
+      await database.prepare('UPDATE projects SET status = ?, updated_at = ? WHERE id = ?').run(status, now, project.id);
+    });
 
     res.status(200).json(successResponse({ projectId: project.id, caseStudyId: id, status, content: persistedContent }, 'Case study created from finalized project information'));
   } catch (error) {
-    database.prepare("UPDATE projects SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'analyzing'").run(new Date().toISOString(), project.id);
+    await database.prepare("UPDATE projects SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'analyzing'").run(new Date().toISOString(), project.id);
     throw error;
   }
 }
 
-export function getCaseStudy(req: Request, res: Response): void {
+export async function getCaseStudy(req: Request, res: Response): Promise<void> {
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const row = database.prepare(`
+  const row = await database.prepare(`
     SELECT c.* FROM case_studies c
     WHERE c.project_id = ?
     ORDER BY c.created_at DESC LIMIT 1
@@ -79,10 +74,10 @@ export function getCaseStudy(req: Request, res: Response): void {
   res.status(200).json(successResponse({ id: row.id, status: row.status, content: JSON.parse(row.content_json), createdAt: row.created_at, updatedAt: row.updated_at }, 'Case study retrieved'));
 }
 
-export function listCaseStudies(req: Request, res: Response): void {
+export async function listCaseStudies(req: Request, res: Response): Promise<void> {
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  if (!database.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw AppError.notFound('Project');
-  const rows = database.prepare(`
+  if (!await database.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw AppError.notFound('Project');
+  const rows = await database.prepare(`
     SELECT id, status, created_at, updated_at
     FROM case_studies WHERE project_id = ?
     ORDER BY created_at DESC LIMIT 100
@@ -90,10 +85,10 @@ export function listCaseStudies(req: Request, res: Response): void {
   res.status(200).json(successResponse({ caseStudies: rows.map((row) => ({ id: row.id, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at })) }, 'Case study history retrieved'));
 }
 
-export function getCaseStudyVersion(req: Request, res: Response): void {
+export async function getCaseStudyVersion(req: Request, res: Response): Promise<void> {
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const caseStudyId = Array.isArray(req.params.caseStudyId) ? req.params.caseStudyId[0] : req.params.caseStudyId;
-  const row = database.prepare(`
+  const row = await database.prepare(`
     SELECT c.* FROM case_studies c
     WHERE c.project_id = ? AND c.id = ?
   `).get(projectId, caseStudyId) as unknown as { id: string; content_json: string; status: string; created_at: string; updated_at: string } | undefined;

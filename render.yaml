@@ -9,6 +9,9 @@ services:
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
+    # Keep the current disk for the first Supabase deployment. The backend
+    # imports its SQLite data before accepting requests; remove this disk only
+    # after the successful import is confirmed.
     disk:
       name: case-study-tool-data
       mountPath: /var/data
@@ -20,12 +23,20 @@ services:
         value: 24.22.1
       - key: API_PREFIX
         value: /api/v1
-      - key: DATABASE_PATH
+      - key: DATABASE_URL
+        sync: false
+      - key: SQLITE_MIGRATION_PATH
         value: /var/data/case-study-tool.sqlite
       - key: REPORT_STORAGE_DIR
         value: /var/data/reports
       - key: UPLOAD_STORAGE_DIR
         value: /var/data/uploads
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: case-study-files
       - key: CORS_ORIGIN
         sync: false
       - key: GROQ_API_KEY

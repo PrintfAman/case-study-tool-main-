@@ -80,13 +80,13 @@ function appendDocuments(
   }));
 }
 
-function createDocuments(projectId: string): KnowledgeDocument[] {
-  const project = database.prepare('SELECT id, name, website_url, github_url FROM projects WHERE id = ?').get(projectId) as {
+async function createDocuments(projectId: string): Promise<KnowledgeDocument[]> {
+  const project = await database.prepare('SELECT id, name, website_url, github_url FROM projects WHERE id = ?').get(projectId) as {
     id: string; name: string; website_url: string | null; github_url: string | null;
   } | undefined;
   if (!project) return [];
 
-  const source = database.prepare(`
+  const source = await database.prepare(`
     SELECT evidence_json, field_analysis_json, updated_at
     FROM project_source_analyses WHERE project_id = ?
   `).get(projectId) as { evidence_json: string; field_analysis_json: string; updated_at: string } | undefined;
@@ -161,7 +161,7 @@ function createDocuments(projectId: string): KnowledgeDocument[] {
       synthesisStatus: fieldAnalysis.synthesisStatus ?? null,
     });
   }
-  const latestCaseStudy = database.prepare(`
+  const latestCaseStudy = await database.prepare(`
     SELECT id, status, content_json, updated_at
     FROM case_studies WHERE project_id = ? ORDER BY created_at DESC LIMIT 1
   `).get(projectId) as { id: string; status: string; content_json: string; updated_at: string } | undefined;
@@ -188,7 +188,7 @@ function createDocuments(projectId: string): KnowledgeDocument[] {
     appendDocuments(documents, 'metadata', 'source-warnings', 'Source collection limitations', null, strings(evidence.sourceWarnings).join('\n'), { source: 'analysis_warning' });
   }
 
-  const fields = database.prepare(`
+  const fields = await database.prepare(`
     SELECT id, field_name, field_type, category, value_json, source, description, manual_notes, ai_generated_by
     FROM project_fields
     WHERE project_id = ? AND visibility = 'visible'
@@ -253,10 +253,10 @@ function parseVector(serialized: string): number[] | null {
   } catch { return null; }
 }
 
-/** Rebuilds the project's bounded, isolated SQLite vector index from saved source evidence and current fields. */
+/** Rebuilds the project's bounded, isolated vector index from saved source evidence and current fields. */
 export async function rebuildProjectKnowledgeIndex(projectId: string): Promise<{ chunkCount: number; embeddingModel: string }> {
-  const documents = createDocuments(projectId);
-  const existing = database.prepare(`
+  const documents = await createDocuments(projectId);
+  const existing = await database.prepare(`
     SELECT id, source_type, source_id, content_hash, embedding_json, embedding_model, created_at
     FROM project_knowledge_chunks WHERE project_id = ?
   `).all(projectId) as Array<{ id: string; source_type: string; source_id: string; content_hash: string; embedding_json: string; embedding_model: string; created_at: string }>;
@@ -283,8 +283,7 @@ export async function rebuildProjectKnowledgeIndex(projectId: string): Promise<{
   }
 
   const now = new Date().toISOString();
-  database.exec('BEGIN IMMEDIATE');
-  try {
+  await database.transaction(async () => {
     const upsert = database.prepare(`
       INSERT INTO project_knowledge_chunks (
         id, project_id, source_type, source_id, title, source_url, content,
@@ -302,21 +301,17 @@ export async function rebuildProjectKnowledgeIndex(projectId: string): Promise<{
       const embedding = embeddings[index];
       if (!document || !embedding) continue;
       const old = oldByKey.get(`${document.sourceType}\u0000${document.sourceId}`);
-      upsert.run(
+      await upsert.run(
         old?.id ?? randomUUID(),
         projectId, document.sourceType, document.sourceId, document.title, document.url,
         document.content, JSON.stringify(document.metadata), hashes[index], JSON.stringify(embedding),
         embeddingModel, old?.created_at ?? now, now,
       );
     }
-    const current = database.prepare('SELECT source_type, source_id FROM project_knowledge_chunks WHERE project_id = ?').all(projectId) as Array<{ source_type: string; source_id: string }>;
+    const current = await database.prepare('SELECT source_type, source_id FROM project_knowledge_chunks WHERE project_id = ?').all(projectId) as Array<{ source_type: string; source_id: string }>;
     const remove = database.prepare('DELETE FROM project_knowledge_chunks WHERE project_id = ? AND source_type = ? AND source_id = ?');
-    for (const row of current) if (!keep.has(`${row.source_type}\u0000${row.source_id}`)) remove.run(projectId, row.source_type, row.source_id);
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
+    for (const row of current) if (!keep.has(`${row.source_type}\u0000${row.source_id}`)) await remove.run(projectId, row.source_type, row.source_id);
+  });
   return { chunkCount: documents.length, embeddingModel };
 }
 
@@ -338,8 +333,9 @@ function cosineSimilarity(left: number[], right: number[]): number {
 /** Returns only ranked chunks from the requested project, never another project's rows. */
 export async function retrieveProjectKnowledge(projectId: string, query: string, limit = MAX_RETRIEVAL_RESULTS): Promise<ProjectKnowledgeCitation[]> {
   await rebuildProjectKnowledgeIndex(projectId);
-  const rows = database.prepare(`
-    SELECT id, source_type AS sourceType, title, source_url AS url, content, embedding_json AS embeddingJson, embedding_model AS embeddingModel
+  const rows = await database.prepare(`
+    SELECT id, source_type AS "sourceType", title, source_url AS url, content,
+      embedding_json AS "embeddingJson", embedding_model AS "embeddingModel"
     FROM project_knowledge_chunks WHERE project_id = ?
   `).all(projectId) as Array<{
     id: string; sourceType: string; title: string; url: string | null; content: string; embeddingJson: string; embeddingModel: string;
@@ -361,8 +357,8 @@ export async function retrieveProjectKnowledge(projectId: string, query: string,
   }).sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(MAX_RETRIEVAL_RESULTS, limit)));
 }
 
-export function getProjectChatHistory(projectId: string): Array<{ id: string; role: 'user' | 'assistant'; content: string; citations: Array<{ id: string; sourceType: string; title: string; url: string | null }>; createdAt: string }> {
-  const rows = database.prepare(`
+export async function getProjectChatHistory(projectId: string): Promise<Array<{ id: string; role: 'user' | 'assistant'; content: string; citations: Array<{ id: string; sourceType: string; title: string; url: string | null }>; createdAt: string }>> {
+  const rows = await database.prepare(`
     SELECT id, role, content, citations_json, created_at FROM (
       SELECT id, role, content, citations_json, created_at
       FROM project_chat_messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 100

@@ -5,6 +5,7 @@ import { getHealth } from './controllers/health.controller';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/request-logger.middleware';
 import { apiRouter } from './routes';
+import { initializeDatabase } from './storage/database';
 
 /**
  * APP FACTORY
@@ -68,6 +69,10 @@ export function createApp(): Express {
   app.use(express.json({ limit: '1mb' }));
 
   app.use(requestLogger);
+
+  app.use((_req, _res, next) => {
+    initializeDatabase().then(() => next(), next);
+  });
 
   /**
    * Root-level liveness probe, kept outside /api/v1 so infrastructure (Docker,

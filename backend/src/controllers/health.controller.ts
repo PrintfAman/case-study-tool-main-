@@ -15,8 +15,8 @@ import { errorResponse, successResponse } from '../utils/api-response';
  *         rather than 200 so load balancers and uptime monitors react without
  *         having to parse the body.
  */
-export function getHealth(_req: Request, res: Response): void {
-  const report = buildHealthReport();
+export async function getHealth(_req: Request, res: Response): Promise<void> {
+  const report = await buildHealthReport();
 
   if (report.status === 'degraded') {
     const failingChecks = report.checks

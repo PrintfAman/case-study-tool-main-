@@ -64,8 +64,8 @@ function readAppVersion(): string {
  * Credential configuration is reported separately from provider reachability.
  * An API key being present does not prove that a third-party service is online.
  */
-function buildDependencyChecks(): DependencyCheck[] {
-  const database = databaseHealth();
+async function buildDependencyChecks(): Promise<DependencyCheck[]> {
+  const database = await databaseHealth();
   return [
     {
       name: 'database',
@@ -88,9 +88,9 @@ function buildDependencyChecks(): DependencyCheck[] {
 }
 
 /** Assembles the full health report. Pure read of current process state. */
-export function buildHealthReport(): HealthReport {
+export async function buildHealthReport(): Promise<HealthReport> {
   const memory = process.memoryUsage();
-  const checks = buildDependencyChecks();
+  const checks = await buildDependencyChecks();
 
   // Only a check that is actively configured and failing makes us degraded.
   const hasFailure = checks.some((check) => check.status === 'down');

@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
-import { env } from '../config/env';
 import { CASE_STUDY_SECTIONS } from './case-study.service';
+import { uploadStoredObject } from './supabase-storage.service';
 
 const PAGE_WIDTH = 595.28;
 const PAGE_HEIGHT = 841.89;
@@ -78,12 +76,10 @@ function wrapLines(value: string, font: PDFFont, size: number, width: number): s
   return output;
 }
 
-export async function createPdfReport(projectId: string, projectName: string, content: Record<string, unknown>): Promise<{ path: string; fileName: string }> {
-  const outputDir = resolve(env.REPORT_STORAGE_DIR);
-  mkdirSync(outputDir, { recursive: true });
+export async function createPdfReport(projectId: string, projectName: string, content: Record<string, unknown>): Promise<{ objectPath: string; fileName: string }> {
   const slug = projectName.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'case-study';
   const fileName = `${projectId}-${slug}-${randomUUID()}.pdf`;
-  const path = join(outputDir, fileName);
+  const objectPath = `${projectId}/reports/${fileName}`;
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -302,6 +298,6 @@ export async function createPdfReport(projectId: string, projectName: string, co
     currentPage.drawText(pageLabel, { x: PAGE_WIDTH - MARGIN - pageLabelWidth, y: 26, size: 8, font, color: gray });
   });
 
-  writeFileSync(path, await pdf.save());
-  return { path, fileName };
+  await uploadStoredObject(objectPath, await pdf.save(), 'application/pdf');
+  return { objectPath, fileName };
 }

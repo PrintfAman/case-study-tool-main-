@@ -46,8 +46,30 @@ const envSchema = z.object({
    */
   API_PREFIX: z.string().trim().startsWith('/').default('/api/v1'),
 
-  /** SQLite file used for local-first project persistence. */
+  /** Supabase Postgres connection string; local development can omit it to use SQLite. */
+  DATABASE_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().url().refine((value) => /^postgres(ql)?:\/\//i.test(value), 'Must be a PostgreSQL connection URL').optional(),
+  ),
   DATABASE_PATH: z.string().trim().min(1).default('./storage/case-study-tool.sqlite'),
+  SQLITE_MIGRATION_PATH: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().min(1).optional(),
+  ),
+
+  SUPABASE_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().url().refine((value) => new URL(value).protocol === 'https:', 'Must use HTTPS').optional(),
+  ),
+  SUPABASE_SERVICE_ROLE_KEY: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().min(1).optional(),
+  ),
+  SUPABASE_SECRET_KEY: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().trim().min(1).optional(),
+  ),
+  SUPABASE_STORAGE_BUCKET: z.string().trim().min(1).default('case-study-files'),
 
   GITHUB_TOKEN: z.string().trim().optional(),
   GROQ_API_KEY: z.string().trim().optional(),
@@ -57,6 +79,17 @@ const envSchema = z.object({
   TAVILY_API_KEY: z.string().trim().optional(),
   REPORT_STORAGE_DIR: z.string().trim().min(1).default('./storage/reports'),
   UPLOAD_STORAGE_DIR: z.string().trim().min(1).default('./storage/uploads'),
+}).superRefine((values, context) => {
+  const hasStorageKey = Boolean(values.SUPABASE_SECRET_KEY || values.SUPABASE_SERVICE_ROLE_KEY);
+  if (Boolean(values.SUPABASE_URL) !== hasStorageKey) {
+    context.addIssue({ code: 'custom', path: ['SUPABASE_SECRET_KEY'], message: 'Set SUPABASE_URL and either SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY to enable Supabase Storage' });
+  }
+  if (values.NODE_ENV === 'production') {
+    if (!values.DATABASE_URL) context.addIssue({ code: 'custom', path: ['DATABASE_URL'], message: 'DATABASE_URL must point to the Supabase Postgres database in production' });
+    if (!values.SUPABASE_URL || !hasStorageKey) {
+      context.addIssue({ code: 'custom', path: ['SUPABASE_URL'], message: 'SUPABASE_URL and a Supabase secret key are required for production file storage' });
+    }
+  }
 });
 
 /** The raw, validated result. If this throws, the app must not start. */

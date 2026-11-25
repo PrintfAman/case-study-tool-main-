@@ -28,8 +28,8 @@ interface ProjectSourceRow {
   github_url: string | null;
 }
 
-function readSourceRecord(projectId: string): ProjectSourceRecord | null {
-  const row = database.prepare(`
+async function readSourceRecord(projectId: string): Promise<ProjectSourceRecord | null> {
+  const row = await database.prepare(`
     SELECT project_id, status, evidence_json, field_analysis_json, warnings_json, updated_at
     FROM project_source_analyses WHERE project_id = ?
   `).get(projectId) as {
@@ -64,7 +64,7 @@ async function refreshKnowledgeIndex(projectId: string, record: ProjectSourceRec
     const warnings = [...record.warnings, warning];
     const status = 'completed_with_warnings' as const;
     const updatedAt = new Date().toISOString();
-    database.prepare(`
+    await database.prepare(`
       UPDATE project_source_analyses SET status = ?, warnings_json = ?, updated_at = ? WHERE project_id = ?
     `).run(status, JSON.stringify(warnings), updatedAt, projectId);
     return { ...record, status, warnings, updatedAt };
@@ -73,13 +73,13 @@ async function refreshKnowledgeIndex(projectId: string, record: ProjectSourceRec
 
 /** Collects website/repository evidence once, creates the project fields, and saves the evidence for later report generation. */
 export async function ensureProjectInformation(projectId: string, refresh = false): Promise<ProjectSourceRecord> {
-  const project = database.prepare(`
+  const project = await database.prepare(`
     SELECT id AS project_id, name, website_url, github_url
     FROM projects WHERE id = ?
   `).get(projectId) as ProjectSourceRow | undefined;
   if (!project) throw AppError.notFound('Project');
 
-  const existing = readSourceRecord(projectId);
+  const existing = await readSourceRecord(projectId);
   if (!refresh && existing && (existing.status === 'completed' || existing.status === 'completed_with_warnings')) {
     return refreshKnowledgeIndex(projectId, existing);
   }
@@ -88,7 +88,7 @@ export async function ensureProjectInformation(projectId: string, refresh = fals
   }
 
   const startedAt = new Date().toISOString();
-  database.prepare(`
+  await database.prepare(`
     INSERT INTO project_source_analyses (project_id, status, evidence_json, field_analysis_json, warnings_json, updated_at)
     VALUES (?, 'running', '{}', '{}', '[]', ?)
     ON CONFLICT(project_id) DO UPDATE SET
@@ -145,37 +145,32 @@ export async function ensureProjectInformation(projectId: string, refresh = fals
     const projectForFields = { id: project.project_id, name: project.name, websiteUrl: project.website_url, githubUrl: project.github_url };
     const fieldsContent = { ...fieldAnalysis, evidence, sourceWarnings: warnings };
 
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      refreshProjectFields(projectForFields, fieldsContent);
-      database.prepare(`
+    await database.transaction(async () => {
+      await refreshProjectFields(projectForFields, fieldsContent);
+      await database.prepare(`
         UPDATE project_source_analyses
         SET status = ?, evidence_json = ?, field_analysis_json = ?, warnings_json = ?, updated_at = ?
         WHERE project_id = ?
       `).run(status, JSON.stringify(evidence), JSON.stringify(fieldAnalysis), JSON.stringify(warnings), finishedAt, projectId);
-      database.exec('COMMIT');
-    } catch (error) {
-      database.exec('ROLLBACK');
-      throw error;
-    }
+    });
 
     return refreshKnowledgeIndex(projectId, { projectId, status, evidence, fieldAnalysis, warnings, updatedAt: finishedAt });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Project information collection failed';
-    database.prepare(`
+    await database.prepare(`
       UPDATE project_source_analyses SET status = 'failed', warnings_json = ?, updated_at = ? WHERE project_id = ?
     `).run(JSON.stringify([message]), new Date().toISOString(), projectId);
     throw error;
   }
 }
 
-export function getFinalizedProjectInformation(projectId: string): Array<Record<string, unknown>> {
-  const rows = database.prepare(`
+export async function getFinalizedProjectInformation(projectId: string): Promise<Array<Record<string, unknown>>> {
+  const rows = await database.prepare(`
     SELECT field_name, field_type, category, value_json, source, description, manual_notes
     FROM project_fields
     WHERE project_id = ? AND visibility = 'visible'
       AND (is_suggested = 0 OR suggestion_status = 'accepted')
-    ORDER BY display_order ASC, field_name COLLATE NOCASE ASC
+    ORDER BY display_order ASC, LOWER(field_name) ASC
     LIMIT 200
   `).all(projectId) as Array<{
     field_name: string;

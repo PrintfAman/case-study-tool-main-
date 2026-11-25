@@ -1,7 +1,7 @@
 import type { Server } from 'node:http';
-import { createApp } from './app';
 import { env } from './config/env';
-import { closeDatabase } from './storage/database';
+import { closeDatabase, initializeDatabase } from './storage/database';
+import { migrateLegacyStorage, verifyStorageBucket } from './services/supabase-storage.service';
 import { logger } from './utils/logger';
 
 /**
@@ -20,29 +20,7 @@ import { logger } from './utils/logger';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-const app = createApp();
-
-const server: Server = app.listen(env.PORT, () => {
-  logger.info('Backend server started', {
-    url: `http://localhost:${env.PORT}`,
-    health: `http://localhost:${env.PORT}/health`,
-    apiPrefix: env.API_PREFIX,
-    environment: env.NODE_ENV,
-    allowedOrigin: env.CORS_ORIGIN,
-  });
-});
-
-/** Port already taken is the single most common local startup failure. */
-server.on('error', (error: NodeJS.ErrnoException) => {
-  if (error.code === 'EADDRINUSE') {
-    logger.error(`Port ${env.PORT} is already in use`, {
-      hint: 'Stop the other process or set PORT to a different value in backend/.env',
-    });
-  } else {
-    logger.error('Server failed to start', { message: error.message });
-  }
-  process.exit(1);
-});
+let server: Server | null = null;
 
 /** Guards against running shutdown twice (e.g. Ctrl+C pressed twice). */
 let isShuttingDown = false;
@@ -63,6 +41,11 @@ function shutdown(signal: string): void {
   // .unref() lets Node exit without waiting on this timer if everything else is done.
   forceExitTimer.unref();
 
+  if (!server) {
+    closeDatabase();
+    process.exit(0);
+  }
+
   server.close((error) => {
     clearTimeout(forceExitTimer);
 
@@ -76,6 +59,42 @@ function shutdown(signal: string): void {
     process.exit(0);
   });
 }
+
+async function startServer(): Promise<void> {
+  await initializeDatabase();
+  await verifyStorageBucket();
+  await migrateLegacyStorage();
+  const { createApp } = await import('./app.js');
+  const listeningServer = createApp().listen(env.PORT, () => {
+    logger.info('Backend server started', {
+      url: `http://localhost:${env.PORT}`,
+      health: `http://localhost:${env.PORT}/health`,
+      apiPrefix: env.API_PREFIX,
+      environment: env.NODE_ENV,
+      allowedOrigin: env.CORS_ORIGIN,
+    });
+  });
+  server = listeningServer;
+  listeningServer.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error(`Port ${env.PORT} is already in use`, {
+        hint: 'Stop the other process or set PORT to a different value in backend/.env',
+      });
+    } else {
+      logger.error('Server failed to start', { message: error.message });
+    }
+    process.exit(1);
+  });
+}
+
+void startServer().catch((error: unknown) => {
+  logger.error('Backend failed to initialize', {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  closeDatabase();
+  process.exit(1);
+});
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
