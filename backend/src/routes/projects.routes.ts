@@ -2,11 +2,12 @@ import express, { Router } from 'express';
 import { bulkUpdateProjectFields, createProjectField, deleteProjectField, downloadProjectFieldAttachment, listProjectFields, reorderProjectFields, restoreAiProjectField, updateFieldSuggestion, updateProjectField, uploadProjectFieldAttachment } from '../controllers/project-fields.controller';
 import { createProject, deleteProject, getProject, listProjects } from '../controllers/projects.controller';
 import { discoverProjectFields } from '../controllers/project-information.controller';
+import { createIpRateLimiter } from '../middleware/request-rate-limit.middleware';
 
 export const projectsRouter = Router();
 
-projectsRouter.post('/', createProject);
-projectsRouter.post('/:id/discover-fields', discoverProjectFields);
+projectsRouter.post('/', createIpRateLimiter({ maxRequests: 25, message: 'Too many projects created from this network. Try again later.' }), createProject);
+projectsRouter.post('/:id/discover-fields', createIpRateLimiter({ maxRequests: 20, message: 'Too many project analyses from this network. Try again later.' }), discoverProjectFields);
 projectsRouter.get('/', listProjects);
 projectsRouter.get('/:projectId/fields', listProjectFields);
 projectsRouter.post('/:projectId/fields', createProjectField);

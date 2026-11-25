@@ -124,7 +124,7 @@ export function bulkUpdateProjectFields(id: string, updates: Array<{ fieldId: st
 export async function uploadProjectFieldAttachment(id: string, fieldId: string, file: File): Promise<{ field: ProjectField }> {
   const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(id)}/fields/${encodeURIComponent(fieldId)}/attachment`, {
     method: 'POST',
-    credentials: 'include',
+    credentials: 'omit',
     headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
     body: file,
   });
@@ -134,7 +134,7 @@ export async function uploadProjectFieldAttachment(id: string, fieldId: string, 
 }
 
 export async function downloadProjectFieldAttachment(id: string, fieldId: string, attachmentId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(id)}/fields/${encodeURIComponent(fieldId)}/attachment/${encodeURIComponent(attachmentId)}`, { credentials: 'include' });
+  const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(id)}/fields/${encodeURIComponent(fieldId)}/attachment/${encodeURIComponent(attachmentId)}`, { credentials: 'omit' });
   if (!response.ok) throw new Error('Unable to download attachment');
   return response.blob();
 }

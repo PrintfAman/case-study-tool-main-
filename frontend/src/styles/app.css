@@ -593,20 +593,6 @@ h1, h2, h3, h4, p, li, dd, dt {
   text-transform: none;
 }
 
-.auth-switch {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.auth-form {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.auth-form .btn {
-  width: max-content;
-}
-
 .project-list {
   display: flex;
   flex-direction: column;
@@ -819,8 +805,7 @@ h1, h2, h3, h4, p, li, dd, dt {
 }
 
 @media (max-width: 720px) {
-  .project-form,
-  .auth-form {
+  .project-form {
     grid-template-columns: 1fr;
   }
 

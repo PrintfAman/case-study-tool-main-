@@ -3,32 +3,25 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { answerProjectQuestion, CASE_STUDY_SECTIONS, editCaseStudySectionWithAi, rerankProjectKnowledgeWithGroq } from '../services/case-study.service';
 import { getProjectChatHistory, retrieveProjectKnowledge } from '../services/project-knowledge.service';
-import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { database } from '../storage/database';
 import { AppError } from '../utils/app-error';
 import { successResponse } from '../utils/api-response';
+import { ensureProjectExists } from '../utils/require-project';
 
 function param(req: Request, name: string): string {
   const value = req.params[name];
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
-function ensureProjectOwner(projectId: string, userId: string): void {
-  const row = database.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId);
-  if (!row) throw AppError.notFound('Project');
-}
-
 export function listProjectChat(req: Request, res: Response): void {
   const projectId = param(req, 'id');
-  const userId = (req as AuthenticatedRequest).user.id;
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   res.status(200).json(successResponse({ messages: getProjectChatHistory(projectId) }, 'Project chat history retrieved'));
 }
 
 export async function sendProjectChatMessage(req: Request, res: Response): Promise<void> {
   const projectId = param(req, 'id');
-  const userId = (req as AuthenticatedRequest).user.id;
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const { question } = z.object({ question: z.string().trim().min(1).max(2_000) }).strict().parse(req.body);
   const conversationHistory = getProjectChatHistory(projectId).slice(-8);
   const retrievalQuery = [
@@ -87,14 +80,13 @@ function stringForEdit(value: unknown): string {
 export async function editCaseStudySection(req: Request, res: Response): Promise<void> {
   const projectId = param(req, 'id');
   const caseStudyId = param(req, 'caseStudyId');
-  const userId = (req as AuthenticatedRequest).user.id;
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const input = sectionEditSchema.parse(req.body);
   const row = database.prepare(`
     SELECT c.id, c.status, c.content_json
-    FROM case_studies c JOIN projects p ON p.id = c.project_id
-    WHERE c.project_id = ? AND c.id = ? AND p.user_id = ?
-  `).get(projectId, caseStudyId, userId) as { id: string; status: string; content_json: string } | undefined;
+    FROM case_studies c
+    WHERE c.project_id = ? AND c.id = ?
+  `).get(projectId, caseStudyId) as { id: string; status: string; content_json: string } | undefined;
   if (!row) throw AppError.notFound('Case study');
 
   let content: Record<string, unknown>;

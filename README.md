@@ -1,6 +1,6 @@
 # Case Study Tool
 
-A project workspace that opens directly into a private guest dashboard, collects public website and GitHub evidence, creates an evidence-labeled case study, and generates a PDF report.
+A project workspace that opens directly into a public shared dashboard, collects public website and GitHub evidence, creates an evidence-labeled case study, and generates a PDF report.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ npm ci
 npm run dev
 ```
 
-Open the Vite URL, normally `http://localhost:5173`. The dashboard opens directly; no sign-up or login is needed. The backend creates a private guest workspace for that browser and stores its projects in `backend/storage/` with the SQLite database and generated reports. Guest workspace access uses the configured session lifetime (`SESSION_DAYS`, 7 days by default); clearing browser cookies or allowing the session to expire creates a new workspace, and the old guest data cannot be recovered through an account.
+Open the Vite URL, normally `http://localhost:5173`. The dashboard opens directly without sign-up, login, sessions, or cookies. The API and project list are public and shared: anyone who can reach the deployment can read, edit, analyze, or delete its projects and reports. Do not enter confidential data. Local data is stored under `backend/storage/`.
 
 The browser calls `http://localhost:5000/api/v1` by default. For a different backend URL, set `VITE_API_BASE_URL` in the frontend environment. Set `CORS_ORIGIN` in the backend to the exact frontend origin.
 
@@ -36,7 +36,7 @@ The browser calls `http://localhost:5000/api/v1` by default. For a different bac
 - `TAVILY_API_KEY` enables competitor search. Search results are shown as unverified sources and are not presented as confirmed competitors.
 - `GITHUB_TOKEN` raises GitHub API limits. Public repository analysis can run without it, subject to unauthenticated API limits.
 
-Copy `backend/.env.example` to `backend/.env` and provide credentials only when needed. Never commit `.env` or provider keys. Before production, set `NODE_ENV=production`, use a randomly generated `SESSION_SECRET` of at least 32 characters, set the production CORS origin, and serve over HTTPS.
+Copy `backend/.env.example` to `backend/.env` and provide credentials only when needed. Never commit `.env` or provider keys. Before production, set `NODE_ENV=production`, set the production CORS origin, keep provider keys on the backend, and serve over HTTPS. Public AI endpoints have per-IP limits, but the current in-memory limits are not a durable spending quota; set provider-side usage caps and alerts.
 
 ## Checks
 

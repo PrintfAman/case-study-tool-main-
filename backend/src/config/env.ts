@@ -46,14 +46,8 @@ const envSchema = z.object({
    */
   API_PREFIX: z.string().trim().startsWith('/').default('/api/v1'),
 
-  /** SQLite file used for local-first project and session persistence. */
+  /** SQLite file used for local-first project persistence. */
   DATABASE_PATH: z.string().trim().min(1).default('./storage/case-study-tool.sqlite'),
-
-  /** HMAC signing key for opaque session cookies. */
-  SESSION_SECRET: z.string().trim().min(32).default('development-only-change-this-session-secret'),
-
-  /** Session lifetime in days. */
-  SESSION_DAYS: z.coerce.number().int().min(1).max(30).default(7),
 
   GITHUB_TOKEN: z.string().trim().optional(),
   GROQ_API_KEY: z.string().trim().optional(),
@@ -77,12 +71,6 @@ if (!parsed.success) {
     console.error(`  - ${key}: ${issue.message}`);
   }
   console.error('\nCheck backend/.env against backend/.env.example\n');
-  process.exit(1);
-}
-
-const configuredSessionSecret = process.env.SESSION_SECRET?.trim();
-if (parsed.data.NODE_ENV === 'production' && (!configuredSessionSecret || /^replace[-_]/i.test(configuredSessionSecret) || configuredSessionSecret === 'development-only-change-this-session-secret')) {
-  console.error('\n[env] SESSION_SECRET must be explicitly set to a non-placeholder value in production.\n');
   process.exit(1);
 }
 

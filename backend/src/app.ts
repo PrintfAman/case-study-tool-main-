@@ -50,14 +50,13 @@ export function createApp(): Express {
   });
 
   /**
-   * CORS: a browser blocks the React app (localhost:5173) from calling the API
-   * (localhost:5000) unless the API explicitly allows that origin. `credentials`
-   * is enabled because Phase 2 sends auth credentials cross-origin.
+   * CORS allows the configured frontend to call this public API. Authentication
+   * cookies are disabled, so credentialed cross-origin requests are unnecessary.
    */
   app.use(
     cors({
       origin: env.CORS_ORIGIN,
-      credentials: true,
+      credentials: false,
     }),
   );
 

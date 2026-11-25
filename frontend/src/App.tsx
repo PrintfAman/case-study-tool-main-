@@ -3,18 +3,13 @@ import { Badge } from './components/Badge';
 import { Panel } from './components/Panel';
 import { ProjectInformationPanel } from './components/ProjectInformationPanel';
 import { ProjectChatPanel } from './components/ProjectChatPanel';
-import { getOrCreateWorkspaceUser } from './services/auth-api';
 import { API_BASE_URL } from './services/api-client';
 import { createProject, deleteProject, discoverProjectFields, editProjectCaseStudySection, generateProjectReport, getProjectCaseStudyVersion, listProjectCaseStudies, listProjects, runProjectAnalysis, type CaseStudySectionEditInput } from './services/project-api';
-import type { AuthUser } from './types/auth';
 import type { CaseStudySummary, Project } from './types/projects';
 
 export default function App() {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [workspaceLoading, setWorkspaceLoading] = useState(true);
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectsBusy, setProjectsBusy] = useState(false);
+  const [projectsBusy, setProjectsBusy] = useState(true);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectDeleteConfirmationId, setProjectDeleteConfirmationId] = useState<string | null>(null);
   const [projectDeletingId, setProjectDeletingId] = useState<string | null>(null);
@@ -45,24 +40,6 @@ export default function App() {
     else if (!projectChatOpen && dialog.open) dialog.close();
   }, [projectChatOpen]);
 
-  useEffect(() => {
-    let active = true;
-    void getOrCreateWorkspaceUser()
-      .then((currentUser) => { if (active) setUser(currentUser); })
-      .catch((error: unknown) => { if (active) setWorkspaceError(error instanceof Error ? error.message : 'Unable to open workspace'); })
-      .finally(() => { if (active) setWorkspaceLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  function retryWorkspace() {
-    setWorkspaceLoading(true);
-    setWorkspaceError(null);
-    void getOrCreateWorkspaceUser()
-      .then(setUser)
-      .catch((error: unknown) => setWorkspaceError(error instanceof Error ? error.message : 'Unable to open workspace'))
-      .finally(() => setWorkspaceLoading(false));
-  }
-
   async function refreshProjects() {
     setProjectsBusy(true);
     setProjectError(null);
@@ -77,12 +54,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!user) {
-      setProjects([]);
-      return;
-    }
     void refreshProjects();
-  }, [user?.id]);
+  }, []);
 
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -216,7 +189,7 @@ export default function App() {
     try {
       const report = await generateProjectReport(id, caseStudyId);
       const origin = API_BASE_URL.replace(/\/api\/v1$/, '');
-      const response = await fetch(`${origin}${report.downloadUrl}`, { credentials: 'include' });
+      const response = await fetch(`${origin}${report.downloadUrl}`, { credentials: 'omit' });
       if (!response.ok) throw new Error('Unable to download PDF report');
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -252,10 +225,6 @@ export default function App() {
     }
   }
 
-  if (workspaceLoading) {
-    return <div className="app-shell app-shell--loading"><main className="loading-card" aria-live="polite"><Panel label="private workspace" title="Opening your dashboard"><p className="muted">Preparing your private workspace...</p></Panel></main></div>;
-  }
-
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -266,7 +235,7 @@ export default function App() {
 
         <div className="sidebar-workspace">
           <span className="sidebar-workspace__label">Workspace</span>
-          <div className="sidebar-workspace__current"><span className="workspace-avatar">{user?.name?.trim().charAt(0).toUpperCase() || 'W'}</span><span>{user?.name || 'Private workspace'}</span><span className="workspace-chevron" aria-hidden="true" /></div>
+          <div className="sidebar-workspace__current"><span className="workspace-avatar">P</span><span>Public workspace</span><span className="workspace-chevron" aria-hidden="true" /></div>
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
@@ -278,18 +247,17 @@ export default function App() {
 
         <div className="sidebar-bottom">
           <div className="sidebar-tip"><span className="sidebar-tip__spark" aria-hidden="true" /><div><strong>Start with evidence</strong><p>Add a website or repository to build your project profile.</p></div></div>
-          <div className="sidebar-profile"><span className="sidebar-profile__avatar">{user?.name?.trim().charAt(0).toUpperCase() || 'W'}</span><span className="sidebar-profile__text"><strong>{user?.name || 'Workspace'}</strong><small>Private workspace</small></span><span className="sidebar-profile__status" aria-hidden="true" /></div>
+          <div className="sidebar-profile"><span className="sidebar-profile__avatar">P</span><span className="sidebar-profile__text"><strong>Public workspace</strong><small>No sign-in required</small></span><span className="sidebar-profile__status" aria-hidden="true" /></div>
         </div>
       </aside>
 
       <div className="app-main">
         <header className="topbar">
           <div className="topbar__breadcrumb"><span>Workspace</span><span className="topbar__slash">/</span><strong>Projects</strong></div>
-          <div className="topbar__actions"><span className="workspace-pill"><span className="workspace-pill__dot" />Private workspace</span></div>
+          <div className="topbar__actions"><span className="workspace-pill"><span className="workspace-pill__dot" />Public workspace</span></div>
         </header>
 
         <main id="console" className="dashboard-main">
-          {workspaceError ? <Panel label="workspace connection" title="Unable to open dashboard"><p className="form-error" role="alert">{workspaceError}</p><button className="btn" type="button" onClick={retryWorkspace}>Retry connection</button></Panel> : null}
           <header className="page-heading">
             <div className="page-heading__copy"><p className="page-eyebrow"><span />Project intelligence <span className="page-eyebrow__slash">/</span> Dashboard</p><h1 className="display hero-title">Your project workspace</h1><p>Bring your product story into focus with evidence from your website and repository.</p></div>
             <a className="btn btn--primary page-heading__action" href="#create-project"><span aria-hidden="true">+</span>New project</a>
@@ -365,7 +333,7 @@ export default function App() {
 
           </div>
         </main>
-        <footer className="workspace-footer"><span>Case Study Tool</span><span>Private project workspace</span></footer>
+        <footer className="workspace-footer"><span>Case Study Tool</span><span>Public shared workspace</span></footer>
       </div>
     </div>
   );

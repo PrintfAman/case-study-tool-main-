@@ -9,7 +9,7 @@ import type { ApiResponse, ApiErrorDetail, ClientErrorCode } from '../types/api'
  *   - the base URL is defined once,
  *   - the response envelope is unwrapped once,
  *   - error handling behaves the same everywhere,
- *   - adding an auth header in Phase 2 is one line, not fifty.
+ *   - shared request behavior stays in one place.
  *
  * The generic <TData> is the type of `data` inside the envelope, so the caller
  * gets a fully typed result and never touches `.data` or `.success` itself.
@@ -76,8 +76,7 @@ export async function apiRequest<TData>(
     response = await fetch(url, {
       method,
       signal,
-      // Phase 2 sends the refresh cookie; harmless until then.
-      credentials: 'include',
+      credentials: 'omit',
       headers: {
         Accept: 'application/json',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),

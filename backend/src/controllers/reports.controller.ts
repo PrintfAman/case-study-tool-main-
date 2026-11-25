@@ -7,13 +7,12 @@ import { AppError } from '../utils/app-error';
 import { successResponse } from '../utils/api-response';
 import { env } from '../config/env';
 import { createPdfReport } from '../services/pdf-report.service';
-import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { ensureProjectExists } from '../utils/require-project';
 
 export async function generateReport(req: Request, res: Response): Promise<void> {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const input = z.object({ caseStudyId: z.string().uuid().optional() }).strict().parse(req.body ?? {});
-  const project = database.prepare('SELECT id, name FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId) as { id: string; name: string } | undefined;
+  const project = database.prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId) as { id: string; name: string } | undefined;
   if (!project) throw AppError.notFound('Project');
   const caseStudy = input.caseStudyId
     ? database.prepare('SELECT content_json FROM case_studies WHERE project_id = ? AND id = ?').get(project.id, input.caseStudyId) as { content_json: string } | undefined
@@ -27,14 +26,12 @@ export async function generateReport(req: Request, res: Response): Promise<void>
 }
 
 export function downloadReport(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const fileName = Array.isArray(req.params.fileName) ? req.params.fileName[0] : req.params.fileName;
   if (!/^[a-z0-9-]+\.pdf$/i.test(fileName)) throw new AppError('Invalid report file name', { statusCode: 400, code: 'BAD_REQUEST' });
 
-  const ownsProject = database.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId) as { id: string } | undefined;
-  if (!ownsProject) throw AppError.notFound('Project');
-  if (!fileName.startsWith(`${ownsProject.id}-`)) throw AppError.notFound('Report');
+  ensureProjectExists(projectId);
+  if (!fileName.startsWith(`${projectId}-`)) throw AppError.notFound('Report');
 
   const fullPath = resolve(process.cwd(), env.REPORT_STORAGE_DIR, fileName);
   try {

@@ -4,7 +4,6 @@ import { basename, extname, join, resolve } from 'node:path';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env';
-import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { database } from '../storage/database';
 import { AppError } from '../utils/app-error';
 import { successResponse } from '../utils/api-response';
@@ -14,16 +13,11 @@ import {
   serializeProjectField,
   type ProjectFieldRow,
 } from '../services/project-fields.service';
+import { ensureProjectExists } from '../utils/require-project';
 
 const idParam = (value: string | string[] | undefined): string => Array.isArray(value) ? value[0] ?? '' : value ?? '';
 const projectIdFor = (req: Request) => idParam(req.params.projectId);
 const fieldIdFor = (req: Request) => idParam(req.params.fieldId);
-
-function ensureProjectOwner(projectId: string, userId: string): void {
-  if (!database.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId)) {
-    throw AppError.notFound('Project');
-  }
-}
 
 function getField(projectId: string, fieldId: string): ProjectFieldRow {
   const row = database.prepare("SELECT * FROM project_fields WHERE project_id = ? AND id = ? AND visibility <> 'deleted'").get(projectId, fieldId) as ProjectFieldRow | undefined;
@@ -100,9 +94,8 @@ const createSchema = z.object({
 });
 
 export function listProjectFields(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const rows = database.prepare(`
     SELECT * FROM project_fields
     WHERE project_id = ? AND visibility <> 'deleted'
@@ -112,9 +105,8 @@ export function listProjectFields(req: Request, res: Response): void {
 }
 
 export function createProjectField(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const input = createSchema.parse(req.body);
   const effectiveValue = Object.hasOwn(req.body as object, 'value') ? input.value : input.defaultValue ?? null;
   const effectiveEditable = input.readOnly ? false : input.editable;
@@ -132,16 +124,15 @@ export function createProjectField(req: Request, res: Response): void {
     id, projectId, `custom:${id}`, input.category, input.fieldName, input.fieldType, JSON.stringify(value),
     effectiveEditable ? 1 : 0, input.required ? 1 : 0, input.readOnly ? 1 : 0,
     defaultValue === null ? null : JSON.stringify(defaultValue), input.description, JSON.stringify(input.options),
-    input.displayOrder, input.visibility, input.pinned ? 1 : 0, input.manualNotes, userId, now, now,
+    input.displayOrder, input.visibility, input.pinned ? 1 : 0, input.manualNotes, null, now, now,
   );
   const row = database.prepare('SELECT * FROM project_fields WHERE id = ?').get(id) as unknown as ProjectFieldRow;
   res.status(201).json(successResponse({ field: serializeProjectField(row) }, 'Custom field created'));
 }
 
 export function updateProjectField(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   const schema = z.object({
     fieldName: z.string().trim().min(1).max(120).optional(),
@@ -204,9 +195,8 @@ function parseJsonForController(value: string | null): unknown {
 }
 
 export async function deleteProjectField(req: Request, res: Response): Promise<void> {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   if (row.field_key.startsWith('custom:')) {
     database.prepare('DELETE FROM project_fields WHERE id = ? AND project_id = ?').run(row.id, projectId);
@@ -218,9 +208,8 @@ export async function deleteProjectField(req: Request, res: Response): Promise<v
 }
 
 export function restoreAiProjectField(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   if (!row.ai_value_json || !row.ai_source) throw new AppError('This field has no saved AI value to restore', { statusCode: 409, code: 'CONFLICT' });
   database.prepare(`
@@ -233,9 +222,8 @@ export function restoreAiProjectField(req: Request, res: Response): void {
 }
 
 export function updateFieldSuggestion(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   if (!row.is_suggested || row.suggestion_status !== 'pending') throw new AppError('Suggestion is no longer pending', { statusCode: 409, code: 'CONFLICT' });
   const { action } = z.object({ action: z.enum(['accept', 'reject']) }).parse(req.body);
@@ -248,9 +236,8 @@ export function updateFieldSuggestion(req: Request, res: Response): void {
 }
 
 export function reorderProjectFields(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const { fieldIds } = z.object({ fieldIds: z.array(z.string().uuid()).max(1000) }).parse(req.body);
   const update = database.prepare('UPDATE project_fields SET display_order = ?, updated_at = ? WHERE id = ? AND project_id = ? AND visibility <> \'deleted\'');
   const ids = database.prepare('SELECT id FROM project_fields WHERE project_id = ? AND visibility <> \'deleted\'').all(projectId) as Array<{ id: string }>;
@@ -270,9 +257,8 @@ export function reorderProjectFields(req: Request, res: Response): void {
 }
 
 export function bulkUpdateProjectFields(req: Request, res: Response): void {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const { updates } = z.object({
     updates: z.array(z.object({ fieldId: z.string().uuid(), value: z.unknown() })).min(1).max(100),
   }).parse(req.body);
@@ -321,9 +307,8 @@ async function removeAttachmentFile(value: unknown): Promise<void> {
 }
 
 export async function uploadProjectFieldAttachment(req: Request, res: Response): Promise<void> {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   if (row.field_type !== 'file_attachment' || !row.editable || row.read_only) {
     throw new AppError('This field does not accept file uploads', { statusCode: 403, code: 'FORBIDDEN' });
@@ -358,9 +343,8 @@ export async function uploadProjectFieldAttachment(req: Request, res: Response):
 }
 
 export async function downloadProjectFieldAttachment(req: Request, res: Response): Promise<void> {
-  const userId = (req as AuthenticatedRequest).user.id;
   const projectId = projectIdFor(req);
-  ensureProjectOwner(projectId, userId);
+  ensureProjectExists(projectId);
   const row = getField(projectId, fieldIdFor(req));
   const attachment = parseAttachment(parseJsonForController(row.value_json));
   const attachmentId = idParam(req.params.attachmentId);

@@ -12,7 +12,6 @@ process.env.NODE_ENV = 'test';
 process.env.DATABASE_PATH = join(testDirectory, 'test.sqlite');
 process.env.REPORT_STORAGE_DIR = join(testDirectory, 'reports');
 process.env.UPLOAD_STORAGE_DIR = join(testDirectory, 'uploads');
-process.env.SESSION_SECRET = 'integration-test-session-secret-value';
 process.env.GROQ_API_KEY = '';
 process.env.TAVILY_API_KEY = '';
 
@@ -78,14 +77,12 @@ after(async () => {
 
 interface RequestOptions {
   method?: string;
-  cookie?: string;
   body?: unknown;
   headers?: Record<string, string>;
 }
 
 async function request(path: string, options: RequestOptions = {}): Promise<Response> {
   const headers = new Headers({ Accept: 'application/json', ...options.headers });
-  if (options.cookie) headers.set('Cookie', options.cookie);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
   return fetch(`${baseUrl}/api/v1${path}`, {
     method: options.method ?? 'GET',
@@ -98,62 +95,24 @@ async function json(response: Response): Promise<any> {
   return response.json();
 }
 
-function sessionCookie(response: Response): string {
-  const value = response.headers.getSetCookie().find((cookie) => cookie.startsWith('cst_session='));
-  assert.ok(value, 'response should set a session cookie');
-  return value.split(';', 1)[0];
-}
-
-test('health, private guest workspaces, authenticated project isolation, reports, and input safety', async () => {
+test('public project workflow, reports, rate limits, and input safety', async () => {
   const health = await fetch(`${baseUrl}/health`);
   assert.equal(health.status, 200);
   assert.equal((await json(health)).data.checks.find((check: { name: string }) => check.name === 'database').status, 'up');
 
-  const firstGuest = await request('/auth/guest', { method: 'POST' });
-  assert.equal(firstGuest.status, 201);
-  const firstGuestCookie = sessionCookie(firstGuest);
-  const firstGuestUser = (await json(firstGuest)).data as { id: string; name: string };
-  assert.equal(firstGuestUser.name, 'Guest');
-  const restoredGuest = await request('/auth/guest', { method: 'POST', cookie: firstGuestCookie });
-  assert.equal(restoredGuest.status, 200);
-  assert.equal((await json(restoredGuest)).data.id, firstGuestUser.id);
-  const guestProjectResponse = await request('/projects/', {
-    method: 'POST',
-    cookie: firstGuestCookie,
-    body: { name: 'Guest private project', websiteUrl: 'https://example.com' },
-  });
-  assert.equal(guestProjectResponse.status, 201);
-  const secondGuest = await request('/auth/guest', { method: 'POST' });
-  assert.equal(secondGuest.status, 201);
-  const secondGuestProjects = await request('/projects/', { cookie: sessionCookie(secondGuest) });
-  assert.deepEqual((await json(secondGuestProjects)).data.projects, []);
-
-  const unauthenticated = await request('/projects/');
-  assert.equal(unauthenticated.status, 401);
-  assert.equal((await json(unauthenticated)).error.code, 'UNAUTHORIZED');
-
-  const ownerEmail = `owner-${Date.now()}@example.test`;
-  const ownerRegistration = await request('/auth/register', {
-    method: 'POST',
-    body: { name: 'Owner User', email: ownerEmail, password: 'Correct-Horse-12!' },
-  });
-  assert.equal(ownerRegistration.status, 201);
-  const ownerCookie = sessionCookie(ownerRegistration);
-
-  const session = await request('/auth/me', { cookie: ownerCookie });
-  assert.equal(session.status, 200);
-  assert.equal((await json(session)).data.email, ownerEmail);
-
   const created = await request('/projects/', {
     method: 'POST',
-    cookie: ownerCookie,
     headers: { Origin: 'http://localhost:5173' },
     body: { name: 'Private project', websiteUrl: 'https://example.com' },
   });
   assert.equal(created.status, 201);
+  assert.equal(created.headers.get('set-cookie'), null, 'public project creation does not create a session cookie');
   const project = (await json(created)).data as { id: string };
+  assert.equal((database.prepare('SELECT user_id FROM projects WHERE id = ?').get(project.id) as { user_id: string | null }).user_id, null);
+  const publicProjects = await request('/projects/');
+  assert.equal((await json(publicProjects)).data.projects.some((item: { id: string }) => item.id === project.id), true, 'project list is available without a session');
 
-  const initialProjectFields = await request(`/projects/${project.id}/fields`, { cookie: ownerCookie });
+  const initialProjectFields = await request(`/projects/${project.id}/fields`, {  });
   assert.ok((await json(initialProjectFields)).data.fields.some((field: { key: string }) => field.key === 'project_name'));
   const fieldAnalysis = {
     synthesisStatus: 'fallback_no_provider',
@@ -181,7 +140,7 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.equal(indexedKnowledge.embeddingModel, 'local-hash-v1', 'the local vector fallback should work without an embedding credential');
   const retrievedKnowledge = await retrieveProjectKnowledge(project.id, 'analytics for small software teams');
   assert.ok(retrievedKnowledge.some((chunk) => chunk.sourceType === 'website' && /Analytics for small software teams/.test(chunk.content)));
-  const firstFieldSet = (await json(await request(`/projects/${project.id}/fields`, { cookie: ownerCookie }))).data.fields as Array<Record<string, any>>;
+  const firstFieldSet = (await json(await request(`/projects/${project.id}/fields`, {  }))).data.fields as Array<Record<string, any>>;
   const companyField = firstFieldSet.find((field) => field.key === 'company_name');
   assert.ok(companyField);
   assert.equal(companyField?.value, 'Acme');
@@ -196,28 +155,28 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.ok(firstFieldSet.some((field) => field.key === 'cloud_provider_indicators'));
   assert.ok(firstFieldSet.some((field) => field.key === 'external_api_sdk_dependencies'));
   assert.ok(firstFieldSet.some((field) => field.key === 'suggested_software_architecture_pattern' && field.category === 'technical'));
-  const overriddenProjectType = await request(`/projects/${project.id}/fields/${typeField.id}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 'Frontend' } });
+  const overriddenProjectType = await request(`/projects/${project.id}/fields/${typeField.id}`, { method: 'PATCH', body: { value: 'Frontend' } });
   assert.equal((await json(overriddenProjectType)).data.field.source, 'User');
   const analysisSuggestion = firstFieldSet.find((field) => field.key === 'suggested_ai_average_contract_value');
   assert.equal(analysisSuggestion?.source, 'AI');
   assert.equal(analysisSuggestion?.value, null);
   assert.equal(analysisSuggestion?.suggestionStatus, 'pending');
-  const overriddenCompany = await request(`/projects/${project.id}/fields/${companyField.id}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 'Owner corrected company' } });
+  const overriddenCompany = await request(`/projects/${project.id}/fields/${companyField.id}`, { method: 'PATCH', body: { value: 'Owner corrected company' } });
   assert.equal((await json(overriddenCompany)).data.field.source, 'User');
   const trafficSuggestion = firstFieldSet.find((field) => field.key === 'suggested_estimated_traffic');
   assert.ok(trafficSuggestion);
-  const rejectedSuggestion = await request(`/projects/${project.id}/fields/${trafficSuggestion.id}/suggestion`, { method: 'POST', cookie: ownerCookie, body: { action: 'reject' } });
+  const rejectedSuggestion = await request(`/projects/${project.id}/fields/${trafficSuggestion.id}/suggestion`, { method: 'POST', body: { action: 'reject' } });
   assert.equal((await json(rejectedSuggestion)).data.field.suggestionStatus, 'rejected');
   const fundingSuggestion = firstFieldSet.find((field) => field.key === 'suggested_funding_stage');
   assert.ok(fundingSuggestion);
-  const acceptedSuggestion = await request(`/projects/${project.id}/fields/${fundingSuggestion.id}/suggestion`, { method: 'POST', cookie: ownerCookie, body: { action: 'accept' } });
+  const acceptedSuggestion = await request(`/projects/${project.id}/fields/${fundingSuggestion.id}/suggestion`, { method: 'POST', body: { action: 'accept' } });
   assert.equal((await json(acceptedSuggestion)).data.field.suggestionStatus, 'accepted');
 
   const updatedEvidence = structuredClone(analyzedFields);
   updatedEvidence.evidence.website.pages[0]!.metadata.siteName = 'Acme Labs';
   updatedEvidence.projectClassificationSource = 'Groq';
   refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, updatedEvidence);
-  const refreshedFields = (await json(await request(`/projects/${project.id}/fields`, { cookie: ownerCookie }))).data.fields as Array<Record<string, any>>;
+  const refreshedFields = (await json(await request(`/projects/${project.id}/fields`, {  }))).data.fields as Array<Record<string, any>>;
   const refreshedCompany = refreshedFields.find((field) => field.key === 'company_name');
   assert.equal(refreshedCompany?.value, 'Owner corrected company');
   assert.equal(refreshedCompany?.aiValue, 'Acme Labs');
@@ -229,114 +188,94 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_estimated_traffic')?.suggestionStatus, 'rejected');
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_funding_stage')?.suggestionStatus, 'accepted');
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_ai_average_contract_value')?.suggestionStatus, 'pending');
-  const restoredCompany = await request(`/projects/${project.id}/fields/${companyField.id}/restore-ai`, { method: 'POST', cookie: ownerCookie });
+  const restoredCompany = await request(`/projects/${project.id}/fields/${companyField.id}/restore-ai`, { method: 'POST',  });
   assert.equal((await json(restoredCompany)).data.field.value, 'Acme Labs');
-  const restoredProjectType = await request(`/projects/${project.id}/fields/${typeField.id}/restore-ai`, { method: 'POST', cookie: ownerCookie });
+  const restoredProjectType = await request(`/projects/${project.id}/fields/${typeField.id}/restore-ai`, { method: 'POST',  });
   assert.equal((await json(restoredProjectType)).data.field.value, 'Full Stack');
 
   const customFieldResponse = await request(`/projects/${project.id}/fields`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldName: 'Monthly Revenue', fieldType: 'currency', value: 1250, defaultValue: 1000, required: true, category: 'financial', description: 'Owner supplied estimate', manualNotes: 'Review monthly', options: [] },
+    method: 'POST', body: { fieldName: 'Monthly Revenue', fieldType: 'currency', value: 1250, defaultValue: 1000, required: true, category: 'financial', description: 'Owner supplied estimate', manualNotes: 'Review monthly', options: [] },
   });
   assert.equal(customFieldResponse.status, 201);
   const customFieldId = (await json(customFieldResponse)).data.field.id as string;
   const requiredFieldResponse = await request(`/projects/${project.id}/fields`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldName: 'Owner Notes', fieldType: 'long_text', required: true },
+    method: 'POST', body: { fieldName: 'Owner Notes', fieldType: 'long_text', required: true },
   });
   assert.equal(requiredFieldResponse.status, 201);
   const requiredFieldId = (await json(requiredFieldResponse)).data.field.id as string;
-  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { manualNotes: 'Still needs a value' } })).status, 200);
-  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { value: null } })).status, 400);
-  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 'Ready' } })).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', body: { manualNotes: 'Still needs a value' } })).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', body: { value: null } })).status, 400);
+  assert.equal((await request(`/projects/${project.id}/fields/${requiredFieldId}`, { method: 'PATCH', body: { value: 'Ready' } })).status, 200);
   const lockedFieldResponse = await request(`/projects/${project.id}/fields`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldName: 'Locked Value', fieldType: 'text', value: 'Owner approved', readOnly: true },
+    method: 'POST', body: { fieldName: 'Locked Value', fieldType: 'text', value: 'Owner approved', readOnly: true },
   });
   const lockedFieldId = (await json(lockedFieldResponse)).data.field.id as string;
-  assert.equal((await request(`/projects/${project.id}/fields/${lockedFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 'Changed' } })).status, 403);
-  assert.equal((await request(`/projects/${project.id}/fields/${lockedFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { readOnly: false, editable: true } })).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields/${lockedFieldId}`, { method: 'PATCH', body: { value: 'Changed' } })).status, 403);
+  assert.equal((await request(`/projects/${project.id}/fields/${lockedFieldId}`, { method: 'PATCH', body: { readOnly: false, editable: true } })).status, 200);
   const customTextResponse = await request(`/projects/${project.id}/fields`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldName: 'Region', fieldType: 'text', value: 'North America', category: 'custom_fields' },
+    method: 'POST', body: { fieldName: 'Region', fieldType: 'text', value: 'North America', category: 'custom_fields' },
   });
   const customTextId = (await json(customTextResponse)).data.field.id as string;
   const fileFieldResponse = await request(`/projects/${project.id}/fields`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldName: 'Design Attachment', fieldType: 'file_attachment', category: 'custom_fields' },
+    method: 'POST', body: { fieldName: 'Design Attachment', fieldType: 'file_attachment', category: 'custom_fields' },
   });
   const fileFieldId = (await json(fileFieldResponse)).data.field.id as string;
   const uploadResponse = await fetch(`${baseUrl}/api/v1/projects/${project.id}/fields/${fileFieldId}/attachment`, {
     method: 'POST',
-    headers: { Cookie: ownerCookie, 'Content-Type': 'application/octet-stream', 'X-File-Name': 'design%20notes.txt' },
+    headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'design%20notes.txt' },
     body: Buffer.from('sample attachment contents'),
   });
   assert.equal(uploadResponse.status, 201);
   const attachment = (await json(uploadResponse)).data.field.value as { attachmentId: string; fileName: string };
   assert.equal(attachment.fileName, 'design notes.txt');
-  const attachmentDownload = await fetch(`${baseUrl}/api/v1/projects/${project.id}/fields/${fileFieldId}/attachment/${attachment.attachmentId}`, { headers: { Cookie: ownerCookie } });
+  const attachmentDownload = await fetch(`${baseUrl}/api/v1/projects/${project.id}/fields/${fileFieldId}/attachment/${attachment.attachmentId}`, { headers: { } });
   assert.equal(attachmentDownload.status, 200);
   assert.equal(await attachmentDownload.text(), 'sample attachment contents');
-  const fieldUpdate = await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 1500, pinned: true } });
+  const fieldUpdate = await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'PATCH', body: { value: 1500, pinned: true } });
   assert.equal((await json(fieldUpdate)).data.field.value, 1500);
   const bulkUpdate = await request(`/projects/${project.id}/fields/bulk`, {
-    method: 'PATCH', cookie: ownerCookie,
-    body: { updates: [{ fieldId: customTextId, value: 'Europe' }, { fieldId: customFieldId, value: 1700 }] },
+    method: 'PATCH', body: { updates: [{ fieldId: customTextId, value: 'Europe' }, { fieldId: customFieldId, value: 1700 }] },
   });
   assert.equal(bulkUpdate.status, 200);
   const allFields = (await json(bulkUpdate)).data.fields as Array<{ id: string; fieldName: string; value: unknown }>;
   assert.equal(allFields.find((field) => field.id === customTextId)?.value, 'Europe');
   assert.equal(allFields.find((field) => field.id === customFieldId)?.value, 1700);
   const renamedCustomField = await request(`/projects/${project.id}/fields/${customTextId}`, {
-    method: 'PATCH', cookie: ownerCookie,
-    body: { fieldName: 'Sales Region', fieldType: 'dropdown', value: 'EMEA', options: ['EMEA', 'Americas'], category: 'market', defaultValue: 'EMEA', required: true, displayOrder: 2, visibility: 'visible' },
+    method: 'PATCH', body: { fieldName: 'Sales Region', fieldType: 'dropdown', value: 'EMEA', options: ['EMEA', 'Americas'], category: 'market', defaultValue: 'EMEA', required: true, displayOrder: 2, visibility: 'visible' },
   });
   assert.equal((await json(renamedCustomField)).data.field.fieldName, 'Sales Region');
   const orderedFields = await request(`/projects/${project.id}/fields/reorder`, {
-    method: 'POST', cookie: ownerCookie,
-    body: { fieldIds: [...allFields].reverse().map((field) => field.id) },
+    method: 'POST', body: { fieldIds: [...allFields].reverse().map((field) => field.id) },
   });
   assert.equal(orderedFields.status, 200);
-  assert.equal((await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'DELETE', cookie: ownerCookie })).status, 200);
-  assert.equal((await request(`/projects/${project.id}/fields/${fileFieldId}`, { method: 'DELETE', cookie: ownerCookie })).status, 200);
-  assert.equal((await fetch(`${baseUrl}/api/v1/projects/${project.id}/fields/${fileFieldId}/attachment/${attachment.attachmentId}`, { headers: { Cookie: ownerCookie } })).status, 404);
+  assert.equal((await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'DELETE',  })).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields/${fileFieldId}`, { method: 'DELETE',  })).status, 200);
+  assert.equal((await fetch(`${baseUrl}/api/v1/projects/${project.id}/fields/${fileFieldId}/attachment/${attachment.attachmentId}`, { headers: { } })).status, 404);
 
-  const crossOriginMutation = await request('/projects/', {
+  const publicMutation = await request('/projects/', {
     method: 'POST',
-    cookie: ownerCookie,
     headers: { Origin: 'https://untrusted.example' },
-    body: { name: 'Blocked cross-origin project', websiteUrl: 'https://example.org' },
+    body: { name: 'No-cookie public project', websiteUrl: 'https://example.org' },
   });
-  assert.equal(crossOriginMutation.status, 403);
-  assert.equal((await json(crossOriginMutation)).error.code, 'FORBIDDEN');
+  assert.equal(publicMutation.status, 201, 'API mutation is public and does not depend on a session cookie');
+  assert.equal(publicMutation.headers.get('set-cookie'), null);
 
   const invalidProject = await request('/projects/', {
     method: 'POST',
-    cookie: ownerCookie,
     body: { name: 'No sources' },
   });
   assert.equal(invalidProject.status, 400);
   assert.equal((await json(invalidProject)).error.code, 'VALIDATION_ERROR');
 
-  const otherRegistration = await request('/auth/register', {
-    method: 'POST',
-    body: { name: 'Other User', email: `other-${Date.now()}@example.test`, password: 'Correct-Horse-13!' },
-  });
-  assert.equal(otherRegistration.status, 201);
-  const otherCookie = sessionCookie(otherRegistration);
-  const otherProjects = await request('/projects/', { cookie: otherCookie });
-  assert.deepEqual((await json(otherProjects)).data.projects, []);
-  assert.equal((await request(`/projects/${project.id}`, { cookie: otherCookie })).status, 404);
-  assert.equal((await request(`/projects/${project.id}/fields`, { cookie: otherCookie })).status, 404);
-  assert.equal((await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'PATCH', cookie: otherCookie, body: { value: 1 } })).status, 404);
-  assert.equal((await request(`/analysis/projects/${project.id}/chat`, { cookie: otherCookie })).status, 404);
-  assert.equal((await request(`/analysis/projects/${project.id}/chat`, { method: 'POST', cookie: otherCookie, body: { question: 'What database is used?' } })).status, 404);
+  assert.equal((await request(`/projects/${project.id}`)).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields`)).status, 200);
+  assert.equal((await request(`/projects/${project.id}/fields/${typeField.id}`, { method: 'PATCH', body: { value: 'Frontend' } })).status, 200);
 
   const unavailableChat = await request(`/analysis/projects/${project.id}/chat`, {
-    method: 'POST', cookie: ownerCookie, body: { question: 'What is this project for?' },
+    method: 'POST', body: { question: 'What is this project for?' },
   });
   assert.equal(unavailableChat.status, 503, 'chat should report missing Groq credentials rather than fabricate an answer');
-  assert.deepEqual((await json(await request(`/analysis/projects/${project.id}/chat`, { cookie: ownerCookie }))).data.messages, [], 'failed provider requests are not persisted as complete conversations');
+  assert.deepEqual((await json(await request(`/analysis/projects/${project.id}/chat`, {  }))).data.messages, [], 'failed provider requests are not persisted as complete conversations');
 
   const now = new Date().toISOString();
   const olderId = randomUUID();
@@ -351,36 +290,33 @@ test('health, private guest workspaces, authenticated project isolation, reports
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(newerId, project.id, 'completed', JSON.stringify({ executiveSummary: 'Evidence-backed test report.', competitorComparison: [{ competitor: 'Sample alternative', source: 'https://competitor.example' }] }), now, now);
 
-  const history = await request(`/analysis/projects/${project.id}/case-studies`, { cookie: ownerCookie });
+  const history = await request(`/analysis/projects/${project.id}/case-studies`, {  });
   assert.equal(history.status, 200);
   assert.deepEqual((await json(history)).data.caseStudies.map((item: { id: string }) => item.id), [newerId, olderId]);
-  const olderVersion = await request(`/analysis/projects/${project.id}/case-studies/${olderId}`, { cookie: ownerCookie });
+  const olderVersion = await request(`/analysis/projects/${project.id}/case-studies/${olderId}`, {  });
   assert.equal((await json(olderVersion)).data.content.executiveSummary, 'Earlier saved report.');
-  assert.equal((await request(`/analysis/projects/${project.id}/case-studies/${olderId}`, { cookie: otherCookie })).status, 404);
-  assert.equal((await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
-    method: 'POST', cookie: otherCookie, body: { action: 'replace', sectionKey: 'executiveSummary', replacement: 'Not authorized' },
-  })).status, 404);
+  assert.equal((await request(`/analysis/projects/${project.id}/case-studies/${olderId}`)).status, 200);
   const unavailableRewrite = await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
-    method: 'POST', cookie: ownerCookie, body: { action: 'rewrite', sectionKey: 'executiveSummary', instruction: 'Make it clearer' },
+    method: 'POST', body: { action: 'rewrite', sectionKey: 'executiveSummary', instruction: 'Make it clearer' },
   });
   assert.equal(unavailableRewrite.status, 503, 'AI section rewriting should report missing Groq credentials');
 
   const replacedSection = await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
-    method: 'POST', cookie: ownerCookie, body: { action: 'replace', sectionKey: 'executiveSummary', replacement: 'Owner-edited executive summary.' },
+    method: 'POST', body: { action: 'replace', sectionKey: 'executiveSummary', replacement: 'Owner-edited executive summary.' },
   });
   assert.equal(replacedSection.status, 201);
   const replacedData = (await json(replacedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
   assert.notEqual(replacedData.caseStudyId, newerId, 'section edits should preserve prior case-study versions');
   assert.equal(replacedData.content.executiveSummary, 'Owner-edited executive summary.');
-  assert.equal((await json(await request(`/analysis/projects/${project.id}/case-studies/${newerId}`, { cookie: ownerCookie }))).data.content.executiveSummary, 'Evidence-backed test report.');
+  assert.equal((await json(await request(`/analysis/projects/${project.id}/case-studies/${newerId}`, {  }))).data.content.executiveSummary, 'Evidence-backed test report.');
   const addedSection = await request(`/analysis/projects/${project.id}/case-studies/${replacedData.caseStudyId}/sections`, {
-    method: 'POST', cookie: ownerCookie, body: { action: 'add', sectionTitle: 'Research Notes', replacement: 'Manual section added for the owner.' },
+    method: 'POST', body: { action: 'add', sectionTitle: 'Research Notes', replacement: 'Manual section added for the owner.' },
   });
   assert.equal(addedSection.status, 201);
   const addedData = (await json(addedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
   assert.equal((addedData.content.customSections as Array<{ title: string }>)[0]?.title, 'Research Notes');
   const removedSection = await request(`/analysis/projects/${project.id}/case-studies/${addedData.caseStudyId}/sections`, {
-    method: 'POST', cookie: ownerCookie, body: { action: 'remove', sectionKey: 'competitorComparison' },
+    method: 'POST', body: { action: 'remove', sectionKey: 'competitorComparison' },
   });
   assert.equal(removedSection.status, 201);
   const removedData = (await json(removedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
@@ -394,26 +330,36 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.match(indexedLatestReport.map((chunk) => chunk.content).join('\n'), /Owner-edited executive summary/);
   assert.match(indexedLatestReport.map((chunk) => chunk.content).join('\n'), /Research Notes/);
 
-  const generated = await request(`/reports/projects/${project.id}/report`, { method: 'POST', cookie: ownerCookie, body: { caseStudyId: removedData.caseStudyId } });
+  const generated = await request(`/reports/projects/${project.id}/report`, { method: 'POST', body: { caseStudyId: removedData.caseStudyId } });
   assert.equal(generated.status, 201);
   const report = (await json(generated)).data as { downloadUrl: string; fileName: string };
   assert.ok(report.fileName.startsWith(`${project.id}-`));
-  const downloaded = await fetch(`${baseUrl}${report.downloadUrl}`, { headers: { Cookie: ownerCookie } });
+  const downloaded = await fetch(`${baseUrl}${report.downloadUrl}`, { headers: { } });
   assert.equal(downloaded.status, 200);
   assert.match(downloaded.headers.get('content-type') ?? '', /application\/pdf/);
   const pdfBytes = await downloaded.arrayBuffer();
   assert.equal(pdfBytes.byteLength > 500, true);
   const parsedPdf = await PDFDocument.load(pdfBytes);
   assert.ok(parsedPdf.getPageCount() >= 3, 'report includes cover, contents, and report pages');
-  const olderReport = await request(`/reports/projects/${project.id}/report`, { method: 'POST', cookie: ownerCookie, body: { caseStudyId: olderId } });
+  const olderReport = await request(`/reports/projects/${project.id}/report`, { method: 'POST', body: { caseStudyId: olderId } });
   assert.equal(olderReport.status, 201);
-  const forgedFile = await request(`/reports/projects/${project.id}/report/download/another-project-report.pdf`, { cookie: ownerCookie });
+  const forgedFile = await request(`/reports/projects/${project.id}/report/download/another-project-report.pdf`, {  });
   assert.equal(forgedFile.status, 404);
-  assert.equal((await request(report.downloadUrl.replace('/api/v1', ''), { cookie: otherCookie })).status, 404);
+  assert.equal((await request(report.downloadUrl.replace('/api/v1', ''))).status, 200, 'report URLs are public and require no cookie');
+  assert.equal((await request('/auth/me')).status, 404, 'authentication endpoints are no longer mounted');
 
-  const logout = await request('/auth/logout', { method: 'POST', cookie: ownerCookie });
-  assert.equal(logout.status, 200);
-  assert.equal((await request('/projects/', { cookie: ownerCookie })).status, 401);
+  const anonymousAnalysis = await request(`/analysis/projects/${project.id}/analyze`, { method: 'POST', body: {} });
+  assert.equal(anonymousAnalysis.status, 200, 'case-study analysis succeeds without a session');
+  assert.equal(anonymousAnalysis.headers.get('set-cookie'), null);
+  const anonymousAnalysisData = (await json(anonymousAnalysis)).data as { caseStudyId: string };
+  const anonymousReport = await request(`/reports/projects/${project.id}/report`, {
+    method: 'POST', body: { caseStudyId: anonymousAnalysisData.caseStudyId },
+  });
+  assert.equal(anonymousReport.status, 201, 'PDF generation succeeds without a session');
+  const anonymousReportData = (await json(anonymousReport)).data as { downloadUrl: string };
+  const anonymousPdf = await fetch(`${baseUrl}${anonymousReportData.downloadUrl}`);
+  assert.equal(anonymousPdf.status, 200, 'PDF download succeeds without cookies');
+  assert.ok((await PDFDocument.load(await anonymousPdf.arrayBuffer())).getPageCount() >= 3);
 
   assert.deepEqual(parseGitHubUrl('https://github.com/microsoft/vscode'), { owner: 'microsoft', repository: 'vscode' });
   assert.throws(() => parseGitHubUrl('https://github.com/microsoft'), /identify one owner and repository/);
@@ -456,17 +402,4 @@ test('health, private guest workspaces, authenticated project isolation, reports
     assert.ok(section in caseStudy, `fallback should include ${section}`);
   }
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const failedLogin = await request('/auth/login', {
-      method: 'POST',
-      body: { email: `unknown-${attempt}@example.test`, password: 'Incorrect-Password-1!' },
-    });
-    assert.equal(failedLogin.status, 401);
-  }
-  const rateLimitedLogin = await request('/auth/login', {
-    method: 'POST',
-    body: { email: 'unknown-final@example.test', password: 'Incorrect-Password-1!' },
-  });
-  assert.equal(rateLimitedLogin.status, 429);
-  assert.equal((await json(rateLimitedLogin)).error.code, 'RATE_LIMITED');
 });

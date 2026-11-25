@@ -337,7 +337,7 @@ function inferFields(project: { id: string; name: string; websiteUrl: string | n
   return [...fields, ...suggestions];
 }
 
-export function seedProjectFields(projectId: string, userId: string, project: { name: string; websiteUrl: string | null; githubUrl: string | null }): void {
+export function seedProjectFields(projectId: string, project: { name: string; websiteUrl: string | null; githubUrl: string | null }): void {
   const now = new Date().toISOString();
   const initial: Array<{ key: string; category: FieldCategory; name: string; type: FieldType; value: string }> = [
     { key: 'project_name', category: 'general', name: 'Project Name', type: 'text', value: project.name },
@@ -351,7 +351,7 @@ export function seedProjectFields(projectId: string, userId: string, project: { 
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'User', 1, 1, 1, ?, ?, ?)
   `);
   for (const item of initial) {
-    insert.run(randomUUID(), projectId, item.key, item.category, item.name, item.type, JSON.stringify(item.value), userId, now, now);
+    insert.run(randomUUID(), projectId, item.key, item.category, item.name, item.type, JSON.stringify(item.value), null, now, now);
   }
 }
 

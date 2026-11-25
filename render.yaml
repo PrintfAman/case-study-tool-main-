@@ -6,7 +6,7 @@ services:
     plan: 1c-2g
     numInstances: 1
     rootDir: backend
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
     disk:
@@ -20,10 +20,6 @@ services:
         value: 24.22.1
       - key: API_PREFIX
         value: /api/v1
-      - key: SESSION_SECRET
-        generateValue: true
-      - key: SESSION_DAYS
-        value: "7"
       - key: DATABASE_PATH
         value: /var/data/case-study-tool.sqlite
       - key: REPORT_STORAGE_DIR

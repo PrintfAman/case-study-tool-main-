@@ -34,7 +34,7 @@ database.exec(`
 
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     website_url TEXT,
     github_url TEXT,
@@ -131,6 +131,41 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS project_chat_project_created_idx
     ON project_chat_messages(project_id, created_at DESC);
 `);
+
+// Older project databases required an authenticated user for every record.
+// Rebuild only that table so anonymous project inserts can leave user_id NULL;
+// existing project IDs and all dependent project data remain intact.
+const projectsSchema = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get() as { sql: string } | undefined;
+if (projectsSchema?.sql && /user_id\s+TEXT\s+NOT\s+NULL/i.test(projectsSchema.sql)) {
+  database.exec('PRAGMA foreign_keys = OFF');
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.exec(`
+      CREATE TABLE projects_anonymous (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        website_url TEXT,
+        github_url TEXT,
+        status TEXT NOT NULL CHECK (status IN ('draft', 'analyzing', 'completed', 'completed_with_warnings', 'failed')),
+        input_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO projects_anonymous (id, user_id, name, website_url, github_url, status, input_json, created_at, updated_at)
+        SELECT id, user_id, name, website_url, github_url, status, input_json, created_at, updated_at FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_anonymous RENAME TO projects;
+      CREATE INDEX projects_user_updated_idx ON projects(user_id, updated_at DESC);
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON');
+  }
+}
 
 // Backfill the core fields for projects created before dynamic fields existed.
 database.exec(`

@@ -72,11 +72,11 @@ async function refreshKnowledgeIndex(projectId: string, record: ProjectSourceRec
 }
 
 /** Collects website/repository evidence once, creates the project fields, and saves the evidence for later report generation. */
-export async function ensureProjectInformation(projectId: string, userId: string, refresh = false): Promise<ProjectSourceRecord> {
+export async function ensureProjectInformation(projectId: string, refresh = false): Promise<ProjectSourceRecord> {
   const project = database.prepare(`
     SELECT id AS project_id, name, website_url, github_url
-    FROM projects WHERE id = ? AND user_id = ?
-  `).get(projectId, userId) as ProjectSourceRow | undefined;
+    FROM projects WHERE id = ?
+  `).get(projectId) as ProjectSourceRow | undefined;
   if (!project) throw AppError.notFound('Project');
 
   const existing = readSourceRecord(projectId);
