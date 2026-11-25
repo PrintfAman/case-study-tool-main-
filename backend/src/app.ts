@@ -33,6 +33,22 @@ export function createApp(): Express {
   // Do not advertise the framework in the X-Powered-By header.
   app.disable('x-powered-by');
 
+  // Render terminates TLS at its load balancer and forwards the client address
+  // in X-Forwarded-For. Trust exactly that one proxy hop in production so IP
+  // based protections do not treat every visitor as the same Render proxy.
+  if (env.isProduction) app.set('trust proxy', 1);
+
+  // The API serves JSON and downloads, never executable HTML. These headers
+  // reduce browser attack surface without needing another runtime dependency.
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    if (env.isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    next();
+  });
+
   /**
    * CORS: a browser blocks the React app (localhost:5173) from calling the API
    * (localhost:5000) unless the API explicitly allows that origin. `credentials`

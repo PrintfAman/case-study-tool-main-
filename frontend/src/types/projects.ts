@@ -4,8 +4,17 @@ export interface Project {
   websiteUrl: string | null;
   githubUrl: string | null;
   status: 'draft' | 'analyzing' | 'completed' | 'completed_with_warnings' | 'failed';
+  fieldDiscoveryStatus: 'not_started' | 'running' | 'completed' | 'completed_with_warnings' | 'failed';
   input: unknown;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectFieldDiscoveryResult {
+  projectId: string;
+  status: 'completed' | 'completed_with_warnings';
+  warnings: string[];
+  fieldCount: number;
   updatedAt: string;
 }
 

@@ -29,6 +29,7 @@ interface ProjectRow {
   input_json: string;
   created_at: string;
   updated_at: string;
+  field_discovery_status: 'running' | 'completed' | 'completed_with_warnings' | 'failed' | null;
 }
 
 function serializeProject(row: ProjectRow) {
@@ -39,6 +40,7 @@ function serializeProject(row: ProjectRow) {
     githubUrl: row.github_url,
     status: row.status,
     input: JSON.parse(row.input_json) as unknown,
+    fieldDiscoveryStatus: row.field_discovery_status ?? 'not_started',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -54,14 +56,20 @@ export function createProject(req: Request, res: Response): void {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, userId, input.name, input.websiteUrl ?? null, input.githubUrl ?? null, 'draft', JSON.stringify(input), now, now);
   seedProjectFields(id, userId, { name: input.name, websiteUrl: input.websiteUrl ?? null, githubUrl: input.githubUrl ?? null });
-  const row = database.prepare('SELECT * FROM projects WHERE id = ?').get(id) as unknown as ProjectRow;
+  const row = database.prepare(`
+    SELECT p.*, a.status AS field_discovery_status
+    FROM projects p LEFT JOIN project_source_analyses a ON a.project_id = p.id
+    WHERE p.id = ?
+  `).get(id) as unknown as ProjectRow;
   res.status(201).json(successResponse(serializeProject(row), 'Project created'));
 }
 
 export function listProjects(req: Request, res: Response): void {
   const userId = (req as AuthenticatedRequest).user.id;
   const rows = database.prepare(`
-    SELECT * FROM projects WHERE user_id = ? ORDER BY updated_at DESC
+    SELECT p.*, a.status AS field_discovery_status
+    FROM projects p LEFT JOIN project_source_analyses a ON a.project_id = p.id
+    WHERE p.user_id = ? ORDER BY p.updated_at DESC
   `).all(userId) as unknown as ProjectRow[];
   res.status(200).json(successResponse({ projects: rows.map(serializeProject) }, 'Projects retrieved'));
 }
@@ -69,7 +77,11 @@ export function listProjects(req: Request, res: Response): void {
 export function getProject(req: Request, res: Response): void {
   const userId = (req as AuthenticatedRequest).user.id;
   const projectId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const row = database.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId) as unknown as ProjectRow | undefined;
+  const row = database.prepare(`
+    SELECT p.*, a.status AS field_discovery_status
+    FROM projects p LEFT JOIN project_source_analyses a ON a.project_id = p.id
+    WHERE p.id = ? AND p.user_id = ?
+  `).get(projectId, userId) as unknown as ProjectRow | undefined;
   if (!row) throw AppError.notFound('Project');
   res.status(200).json(successResponse(serializeProject(row), 'Project retrieved'));
 }

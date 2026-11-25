@@ -1,0 +1,70 @@
+services:
+  - type: web
+    runtime: node
+    name: case-study-tool-api
+    region: singapore
+    plan: 1c-2g
+    numInstances: 1
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    disk:
+      name: case-study-tool-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 24.22.1
+      - key: API_PREFIX
+        value: /api/v1
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SESSION_DAYS
+        value: "7"
+      - key: DATABASE_PATH
+        value: /var/data/case-study-tool.sqlite
+      - key: REPORT_STORAGE_DIR
+        value: /var/data/reports
+      - key: UPLOAD_STORAGE_DIR
+        value: /var/data/uploads
+      - key: CORS_ORIGIN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: GROQ_TEMPERATURE
+        value: "0.2"
+      - key: GROQ_MAX_TOKENS
+        value: "8000"
+  - type: web
+    runtime: static
+    name: case-study-tool-web
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

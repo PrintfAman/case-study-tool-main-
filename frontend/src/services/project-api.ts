@@ -1,9 +1,16 @@
-import type { CaseStudySummary, CaseStudyVersion, CreateProjectInput, Project } from '../types/projects';
+import type { CaseStudySummary, CaseStudyVersion, CreateProjectInput, Project, ProjectFieldDiscoveryResult } from '../types/projects';
 import type { CreateProjectFieldInput, ProjectField, UpdateProjectFieldInput } from '../types/project-fields';
 import { API_BASE_URL, apiRequest } from './api-client';
 
 export function createProject(input: CreateProjectInput): Promise<Project> {
   return apiRequest<Project>('/projects/', { method: 'POST', body: input });
+}
+
+export function discoverProjectFields(id: string, refresh = false): Promise<ProjectFieldDiscoveryResult> {
+  return apiRequest<ProjectFieldDiscoveryResult>(`/projects/${encodeURIComponent(id)}/discover-fields`, {
+    method: 'POST',
+    body: refresh ? { refresh: true } : {},
+  });
 }
 
 export function listProjects(): Promise<{ projects: Project[] }> {
@@ -32,6 +39,47 @@ export function listProjectCaseStudies(id: string): Promise<{ caseStudies: CaseS
 
 export function getProjectCaseStudyVersion(id: string, caseStudyId: string): Promise<CaseStudyVersion> {
   return apiRequest<CaseStudyVersion>(`/analysis/projects/${encodeURIComponent(id)}/case-studies/${encodeURIComponent(caseStudyId)}`);
+}
+
+export interface ProjectChatCitation {
+  id: string;
+  sourceType: string;
+  title: string;
+  url: string | null;
+}
+
+export interface ProjectChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  citations: ProjectChatCitation[];
+  createdAt: string;
+}
+
+export function getProjectChat(id: string): Promise<{ messages: ProjectChatMessage[] }> {
+  return apiRequest<{ messages: ProjectChatMessage[] }>(`/analysis/projects/${encodeURIComponent(id)}/chat`);
+}
+
+export function askProjectChat(id: string, question: string): Promise<{ answer: string; citations: ProjectChatCitation[]; userMessageId: string; assistantMessageId: string; createdAt: string }> {
+  return apiRequest<{ answer: string; citations: ProjectChatCitation[]; userMessageId: string; assistantMessageId: string; createdAt: string }>(`/analysis/projects/${encodeURIComponent(id)}/chat`, {
+    method: 'POST', body: { question },
+  });
+}
+
+export type CaseStudySectionAction = 'expand' | 'rewrite' | 'replace' | 'add' | 'remove';
+export interface CaseStudySectionEditInput {
+  action: CaseStudySectionAction;
+  sectionKey?: string;
+  sectionTitle?: string;
+  instruction?: string;
+  replacement?: string;
+}
+
+export function editProjectCaseStudySection(id: string, caseStudyId: string, input: CaseStudySectionEditInput): Promise<{ caseStudyId: string; status: string; content: Record<string, unknown>; createdAt: string; updatedAt: string }> {
+  return apiRequest<{ caseStudyId: string; status: string; content: Record<string, unknown>; createdAt: string; updatedAt: string }>(
+    `/analysis/projects/${encodeURIComponent(id)}/case-studies/${encodeURIComponent(caseStudyId)}/sections`,
+    { method: 'POST', body: input },
+  );
 }
 
 export function generateProjectReport(id: string, caseStudyId?: string): Promise<{ fileName: string; downloadUrl: string }> {

@@ -3,39 +3,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import { env } from '../config/env';
+import { CASE_STUDY_SECTIONS } from './case-study.service';
 
 const PAGE_WIDTH = 595.28;
 const PAGE_HEIGHT = 841.89;
 const MARGIN = 54;
 const BOTTOM = 56;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
-
-const sectionDefinitions: Array<{ key: string; title: string }> = [
-  { key: 'executiveSummary', title: 'Executive Summary' },
-  { key: 'projectOverview', title: 'Project Overview' },
-  { key: 'businessBackground', title: 'Business Background' },
-  { key: 'problemStatement', title: 'Problem Statement' },
-  { key: 'objectives', title: 'Objectives' },
-  { key: 'websiteAnalysis', title: 'Website Analysis' },
-  { key: 'technicalArchitecture', title: 'Technical Architecture' },
-  { key: 'technologyStack', title: 'Technology Stack' },
-  { key: 'repositoryAnalysis', title: 'Repository Analysis' },
-  { key: 'businessModel', title: 'Business Model' },
-  { key: 'targetAudience', title: 'Target Audience' },
-  { key: 'marketAnalysis', title: 'Market Analysis' },
-  { key: 'competitorAnalysis', title: 'Competitor Analysis' },
-  { key: 'competitorComparison', title: 'Competitor Comparison' },
-  { key: 'businessScope', title: 'Business Scope' },
-  { key: 'marketOpportunities', title: 'Market Opportunities' },
-  { key: 'revenueModel', title: 'Revenue Model' },
-  { key: 'profitabilityAnalysis', title: 'Profitability Analysis' },
-  { key: 'risksAndLimitations', title: 'Risks and Limitations' },
-  { key: 'swotAnalysis', title: 'SWOT Analysis' },
-  { key: 'recommendations', title: 'Recommendations' },
-  { key: 'growthStrategy', title: 'Growth Strategy' },
-  { key: 'implementationRoadmap', title: 'Implementation Roadmap' },
-  { key: 'conclusion', title: 'Conclusion' },
-];
 
 function safeText(value: string, font: PDFFont): string {
   let result = '';
@@ -119,6 +93,14 @@ export async function createPdfReport(projectId: string, projectName: string, co
   const accent = rgb(0.08, 0.36, 0.34);
   const border = rgb(0.82, 0.85, 0.87);
   const sectionPages = new Map<string, PDFPage>();
+  const customSections = Array.isArray(content.customSections)
+    ? content.customSections.filter((item): item is { id: string; title: string; content: unknown } => Boolean(item) && typeof item === 'object' &&
+      typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).title === 'string')
+    : [];
+  const reportSections = [
+    ...CASE_STUDY_SECTIONS.filter((section) => Object.hasOwn(content, section.key)).map((section) => ({ ...section, id: section.key, value: content[section.key] })),
+    ...customSections.map((section) => ({ key: `custom:${section.id}`, id: `custom:${section.id}`, title: section.title, value: section.content })),
+  ];
   let page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   let y = 700;
 
@@ -258,39 +240,53 @@ export async function createPdfReport(projectId: string, projectName: string, co
     }
   };
 
-  for (const section of sectionDefinitions) {
-    ensureSpace(52);
-    sectionPages.set(section.title, page);
-    page.drawText(safeText(section.title, bold), { x: MARGIN, y, size: 15, font: bold, color: ink });
-    y -= 10;
+  for (const section of reportSections) {
+    const titleLines = wrapLines(section.title, bold, 15, CONTENT_WIDTH);
+    ensureSpace(titleLines.length * 18 + 38);
+    sectionPages.set(section.id, page);
+    for (const line of titleLines) {
+      page.drawText(line, { x: MARGIN, y, size: 15, font: bold, color: ink });
+      y -= 18;
+    }
     drawRule(y, accent);
     y -= 20;
-    drawValue(content[section.key]);
+    drawValue(section.value);
     y -= 20;
   }
 
   // Insert the contents page after pagination is known, so every entry points
   // to the actual page holding that section's first heading.
-  const contentsPage = pdf.insertPage(1, [PAGE_WIDTH, PAGE_HEIGHT]);
-  page = contentsPage;
-  y = 790;
-  page.drawText('Table of Contents', { x: MARGIN, y, size: 20, font: bold, color: ink });
-  y -= 12;
-  drawRule(y, accent);
-  y -= 28;
-  const insertedPages = pdf.getPages();
-  for (const section of sectionDefinitions) {
-    const title = safeText(section.title, font);
-    const targetPage = sectionPages.get(section.title);
-    const pageNumber = targetPage ? insertedPages.indexOf(targetPage) + 1 : 1;
-    const pageLabel = String(pageNumber);
-    const titleWidth = font.widthOfTextAtSize(title, 9);
-    const pageWidth = font.widthOfTextAtSize(pageLabel, 9);
-    const dotCount = Math.max(2, Math.floor((CONTENT_WIDTH - titleWidth - pageWidth - 18) / 3));
-    page.drawText(title, { x: MARGIN, y, size: 9, font, color: ink });
-    page.drawText('.'.repeat(dotCount), { x: MARGIN + titleWidth + 8, y, size: 9, font, color: gray });
-    page.drawText(pageLabel, { x: PAGE_WIDTH - MARGIN - pageWidth, y, size: 9, font: bold, color: ink });
-    y -= 24;
+  const contentsEntriesPerPage = 28;
+  const contentsPageCount = Math.max(1, Math.ceil(reportSections.length / contentsEntriesPerPage));
+  const contentsPages: PDFPage[] = [];
+  for (let index = 0; index < contentsPageCount; index += 1) {
+    contentsPages.push(pdf.insertPage(index + 1, [PAGE_WIDTH, PAGE_HEIGHT]));
+  }
+  const drawContentsHeading = (continued: boolean) => {
+    page.drawText(continued ? 'Table of Contents (continued)' : 'Table of Contents', { x: MARGIN, y, size: 20, font: bold, color: ink });
+    y -= 12;
+    drawRule(y, accent);
+    y -= 28;
+  };
+  for (let contentsIndex = 0; contentsIndex < contentsPages.length; contentsIndex += 1) {
+    page = contentsPages[contentsIndex]!;
+    y = 790;
+    drawContentsHeading(contentsIndex > 0);
+    const sectionsForPage = reportSections.slice(contentsIndex * contentsEntriesPerPage, (contentsIndex + 1) * contentsEntriesPerPage);
+    for (const section of sectionsForPage) {
+      const fullTitle = safeText(section.title, font);
+      const title = fullTitle.length > 56 ? `${fullTitle.slice(0, 53)}...` : fullTitle;
+      const targetPage = sectionPages.get(section.id);
+      const pageNumber = targetPage ? pdf.getPages().indexOf(targetPage) + 1 : 1;
+      const pageLabel = String(pageNumber);
+      const titleWidth = font.widthOfTextAtSize(title, 9);
+      const pageWidth = font.widthOfTextAtSize(pageLabel, 9);
+      const dotCount = Math.max(2, Math.floor((CONTENT_WIDTH - titleWidth - pageWidth - 18) / 3));
+      page.drawText(title, { x: MARGIN, y, size: 9, font, color: ink });
+      page.drawText('.'.repeat(dotCount), { x: MARGIN + titleWidth + 8, y, size: 9, font, color: gray });
+      page.drawText(pageLabel, { x: PAGE_WIDTH - MARGIN - pageWidth, y, size: 9, font: bold, color: ink });
+      y -= 24;
+    }
   }
 
   const pages = pdf.getPages();

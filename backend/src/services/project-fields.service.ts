@@ -86,6 +86,7 @@ interface AnalysisFieldCandidate {
   description?: string;
   generatedBy?: string;
   suggested?: boolean;
+  options?: string[];
 }
 
 function parseJson(value: string | null): unknown {
@@ -190,6 +191,28 @@ function inferFields(project: { id: string; name: string; websiteUrl: string | n
   const aiSource = 'AI';
   const generatedBy = text(content.synthesisStatus) ?? 'Evidence analysis';
 
+  const classification = asRecord(content.projectClassification);
+  const projectTypes: Record<string, string> = {
+    frontend: 'Frontend', full_stack: 'Full Stack', backend: 'Backend', automation: 'Automation',
+    insufficient_evidence: 'Not enough evidence',
+  };
+  const projectType = text(classification.type);
+  if (projectType && Object.hasOwn(projectTypes, projectType)) {
+    const groqClassified = content.projectClassificationSource === 'Groq';
+    const source: FieldSource = groqClassified
+      ? 'AI'
+      : Object.keys(repoMetadata).length > 0 ? 'GitHub' : pages.length > 0 ? 'Website' : 'AI';
+    add({
+      key: 'project_type', category: 'technical', name: 'Project Type', type: 'dropdown',
+      value: projectTypes[projectType], source,
+      confidence: typeof classification.confidence === 'number' ? classification.confidence : 0,
+      description: text(classification.rationale) ?? 'Classification from collected project source evidence.',
+      generatedBy: groqClassified
+        ? 'Groq project classification' : 'Evidence-based project classifier',
+      options: ['Frontend', 'Full Stack', 'Backend', 'Automation', 'Not enough evidence'],
+    });
+  }
+
   add({ key: 'project_name', category: 'general', name: 'Project Name', type: 'text', value: project.name, source: 'User', confidence: 1, description: 'Name supplied when this project was created.' });
   if (project.websiteUrl) add({ key: 'website', category: 'general', name: 'Website', type: 'url', value: project.websiteUrl, source: 'User', confidence: 1 });
   if (project.githubUrl) add({ key: 'github_repository', category: 'technical', name: 'GitHub Repository', type: 'url', value: project.githubUrl, source: 'User', confidence: 1 });
@@ -211,6 +234,16 @@ function inferFields(project: { id: string; name: string; websiteUrl: string | n
   if (backend.length) add({ key: 'backend_framework', category: 'technical', name: 'Backend Framework', type: 'tags', value: [...new Set(backend)], source: 'GitHub', confidence: 0.76 });
   if (database.length) add({ key: 'database', category: 'technical', name: 'Database / ORM Indicators', type: 'tags', value: [...new Set(database)], source: 'GitHub', confidence: 0.62, description: 'Repository references only; verify the database actually used at runtime.' });
   if (dependencies.length) add({ key: 'dependencies', category: 'technical', name: 'Dependencies', type: 'long_text', value: dependencies.slice(0, 100), source: 'GitHub', confidence: 0.95 });
+  const testingTools = dependencies.filter((dependency) => /jest|vitest|mocha|jasmine|pytest|unittest|playwright|cypress|selenium|testing-library|tap|ava/i.test(dependency));
+  const testingFiles = structure.filter((path) => /(^|\/)(jest\.config|vitest\.config|pytest\.ini|tox\.ini|cypress\.config|playwright\.config)|\.(test|spec)\.[cm]?[jt]sx?$/i.test(path));
+  if (testingTools.length || testingFiles.length) add({ key: 'testing_frameworks', category: 'technical', name: 'Testing Frameworks', type: 'tags', value: [...new Set([...testingTools, ...testingFiles])].slice(0, 20), source: 'GitHub', confidence: 0.8, description: 'Dependencies and test configuration paths found in the repository; presence does not establish test coverage.' });
+  const authenticationTools = dependencies.filter((dependency) => /auth|passport|jsonwebtoken|jose|clerk|supabase|firebase|keycloak|oauth|lucia/i.test(dependency));
+  if (authenticationTools.length) add({ key: 'authentication_indicators', category: 'technical', name: 'Authentication Dependencies', type: 'tags', value: authenticationTools.slice(0, 30), source: 'GitHub', confidence: 0.7, description: 'Authentication-related packages found in dependency manifests; verify how they are configured and used.' });
+  const cloudTools = dependencies.filter((dependency) => /@aws-sdk|aws-sdk|@google-cloud|azure|@azure|cloudflare|vercel|netlify|firebase-admin/i.test(dependency));
+  const cloudConfig = structure.filter((path) => /(^|\/)(serverless\.yml|serverless\.yaml|terraform\.tf|pulumi\.yaml|cloudformation|amplify\.yml|firebase\.json|wrangler\.toml)/i.test(path));
+  if (cloudTools.length || cloudConfig.length) add({ key: 'cloud_provider_indicators', category: 'technical', name: 'Cloud Provider Indicators', type: 'tags', value: [...new Set([...cloudTools, ...cloudConfig])].slice(0, 30), source: 'GitHub', confidence: 0.65, description: 'Cloud SDK or deployment configuration references found in the repository; deployed infrastructure is not confirmed.' });
+  const integrationPackages = dependencies.filter((dependency) => /stripe|twilio|sendgrid|resend|openai|groq|@slack|@linear|@sentry|supabase|firebase|aws-sdk|@aws-sdk|@google-cloud/i.test(dependency));
+  if (integrationPackages.length) add({ key: 'external_api_sdk_dependencies', category: 'technical', name: 'External API / SDK Dependencies', type: 'tags', value: integrationPackages.slice(0, 40), source: 'GitHub', confidence: 0.68, description: 'External service SDK references found in dependencies; runtime integration and active use are not confirmed.' });
   const apiRoutes = asStrings(sourceInspection.apiRoutes);
   if (apiRoutes.length) add({ key: 'api_architecture', category: 'technical', name: 'API Architecture', type: 'long_text', value: apiRoutes, source: 'GitHub', confidence: 0.65, description: 'Routes detected in the bounded source-file sample.' });
   if (typeof repoMetadata.sizeKb === 'number') add({ key: 'repository_size_kb', category: 'technical', name: 'Repository Size (KB)', type: 'number', value: repoMetadata.sizeKb, source: 'GitHub', confidence: 1 });
@@ -266,6 +299,13 @@ function inferFields(project: { id: string; name: string; websiteUrl: string | n
   if (project.websiteUrl) suggest('estimated_traffic', 'Estimated Website Traffic', 'market', 'number', 'Optional enrichment: add a verified monthly visit estimate and cite its measurement source.');
   if (project.githubUrl) suggest('active_contributors', 'Active Contributors', 'technical', 'number', 'Optional enrichment: record contributor count and the time window used.');
   if (project.githubUrl) suggest('deployment_frequency', 'Deployment Frequency', 'technical', 'text', 'Optional enrichment: record verified release or deployment cadence.');
+  if (project.githubUrl) {
+    suggest('software_architecture_pattern', 'Software Architecture Pattern', 'technical', 'text', 'Record the verified pattern (for example, monolith, modular monolith, microservices, or serverless) and the source used to confirm it.');
+    if (!fields.some((field) => field.key === 'testing_frameworks')) suggest('testing_framework', 'Testing Framework', 'technical', 'text', 'Record the test framework and representative test coverage after checking the repository and CI configuration.');
+    if (!fields.some((field) => field.key === 'authentication_indicators')) suggest('authentication_approach', 'Authentication / Authorization Approach', 'technical', 'long_text', 'Document verified authentication and authorization methods; dependency presence alone is not sufficient.');
+    if (!fields.some((field) => field.key === 'cloud_provider_indicators') && !fields.some((field) => field.key === 'hosting_configuration')) suggest('cloud_hosting_provider', 'Cloud / Hosting Provider', 'technical', 'text', 'Record the confirmed hosting or cloud provider and its source; repository configuration does not prove a live deployment.');
+    if (!fields.some((field) => field.key === 'external_api_sdk_dependencies')) suggest('external_api_integrations', 'External API Integrations', 'technical', 'long_text', 'Record verified third-party APIs, what each integration does, and whether it is active in production.');
+  }
   suggest('primary_customer_persona', 'Primary Customer Persona', 'business', 'long_text', 'Optional research field; validate with customer interviews.');
   suggest('funding_stage', 'Funding Stage', 'financial', 'dropdown', 'Optional enrichment; verify from a public company or funding source.');
   suggest('estimated_monthly_revenue', 'Estimated Monthly Revenue', 'financial', 'currency', 'Optional estimate; provide source, period, currency, and assumptions.');
@@ -326,7 +366,7 @@ export function refreshProjectFields(project: { id: string; name: string; websit
       source, confidence_score, ai_source, ai_confidence_score, ai_generated_by, ai_updated_at,
       editable, description, options_json, display_order, is_suggested, suggestion_status,
       user_edited, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateAi = database.prepare(`
     UPDATE project_fields SET
@@ -336,6 +376,7 @@ export function refreshProjectFields(project: { id: string; name: string; websit
       confidence_score = CASE WHEN user_edited = 1 THEN confidence_score ELSE ? END,
       ai_value_json = ?, ai_source = ?, ai_confidence_score = ?, ai_generated_by = ?, ai_updated_at = ?,
       description = CASE WHEN description = '' THEN ? ELSE description END,
+      options_json = ?,
       is_suggested = CASE WHEN suggestion_status IN ('rejected', 'accepted', 'deleted') THEN 0 ELSE ? END,
       suggestion_status = CASE WHEN suggestion_status IN ('rejected', 'accepted', 'deleted') THEN suggestion_status ELSE ? END,
       updated_at = ?
@@ -352,14 +393,14 @@ export function refreshProjectFields(project: { id: string; name: string; websit
           randomUUID(), project.id, candidate.key, candidate.category, candidate.name, candidate.type,
           valueJson, userSeed ? null : valueJson, candidate.source, candidate.confidence,
           userSeed ? null : candidate.source, candidate.confidence, candidate.generatedBy ?? null,
-          userSeed ? null : now, candidate.description ?? '', order, candidate.suggested ? 1 : 0,
+          userSeed ? null : now, candidate.description ?? '', JSON.stringify(candidate.options ?? []), order, candidate.suggested ? 1 : 0,
           suggestionStatus, userSeed ? 1 : 0, now, now,
         );
       } else if (candidate.source !== 'User' && !['rejected', 'accepted', 'deleted'].includes(existing.suggestion_status ?? '')) {
         updateAi.run(
           candidate.category, candidate.name, candidate.type, valueJson, candidate.source, candidate.confidence,
           valueJson, candidate.source, candidate.confidence, candidate.generatedBy ?? null, now,
-          candidate.description ?? '', candidate.suggested ? 1 : 0,
+          candidate.description ?? '', JSON.stringify(candidate.options ?? []), candidate.suggested ? 1 : 0,
           candidate.suggested ? 'pending' : null, now, existing.id,
         );
       }

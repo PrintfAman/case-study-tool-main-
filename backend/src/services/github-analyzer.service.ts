@@ -19,6 +19,8 @@ export interface GitHubAnalysis {
   structure: string[];
   dependencies: string[];
   detectedTechnology: string[];
+  readme: { path: string; content: string } | null;
+  documentation: Array<{ path: string; content: string }>;
   assessment: string[];
   sourceInspection: RepositorySourceInspection;
   analyzedAt: string;
@@ -194,9 +196,13 @@ export async function analyzeGitHubRepository(rawUrl: string): Promise<GitHubAna
   const paths = files.map((item) => item.path);
 
   const dependencyFiles = paths.filter((path) => /(^|\/)(package\.json|requirements\.txt|pyproject\.toml|Cargo\.toml|go\.mod|pom\.xml|Gemfile|composer\.json|pubspec\.yaml)$/i.test(path)).slice(0, 12);
+  const readmePath = paths.find((path) => /^readme\.(?:md|txt|rst)$/i.test(path));
+  const documentationPaths = paths.filter((path) => /\.(?:md|rst|txt)$/i.test(path) && path !== readmePath &&
+    (/(^|\/)(docs?|documentation)\//i.test(path) || /(^|\/)(architecture|contributing|development|security)\.(?:md|rst|txt)$/i.test(path)))
+    .slice(0, 4);
   const dependencyPaths = new Set(dependencyFiles);
   const inspectionPaths = prioritizedSourcePaths(paths).filter((path) => !dependencyPaths.has(path));
-  const contentsToInspect = [...new Set([...dependencyFiles, ...inspectionPaths])];
+  const contentsToInspect = [...new Set([...(readmePath ? [readmePath] : []), ...documentationPaths, ...dependencyFiles, ...inspectionPaths])];
   let totalSourceBytes = 0;
   const contentByPath = new Map<string, string>();
 
@@ -253,6 +259,11 @@ export async function analyzeGitHubRepository(rawUrl: string): Promise<GitHubAna
   if (dependencyFiles.length === 0) assessment.push('No common dependency manifest was found in the inspected tree.');
   if (treePayload.truncated) assessment.push('GitHub marked the recursive tree as truncated; structure and manifest coverage may be incomplete.');
   if (inspection.potentialIssues.length > 0) assessment.push('Potentially risky source patterns were detected and require manual review; they are not confirmed vulnerabilities.');
+  const readmeContent = readmePath ? contentByPath.get(readmePath)?.slice(0, 16_000) : undefined;
+  const documentation = documentationPaths.flatMap((path) => {
+    const content = contentByPath.get(path)?.slice(0, 8_000);
+    return content ? [{ path, content }] : [];
+  });
 
   return {
     owner,
@@ -277,6 +288,8 @@ export async function analyzeGitHubRepository(rawUrl: string): Promise<GitHubAna
     structure: paths.slice(0, 250),
     dependencies: [...dependencies].slice(0, 100),
     detectedTechnology: [...detectedTechnology],
+    readme: readmePath && readmeContent ? { path: readmePath, content: readmeContent } : null,
+    documentation,
     assessment,
     sourceInspection: {
       filesInspected: inspection.filesInspected,

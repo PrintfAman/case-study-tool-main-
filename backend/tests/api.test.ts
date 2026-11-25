@@ -24,12 +24,16 @@ let assertPublicUrl: typeof import('../src/services/network-safety.service').ass
 let parseRobotsTxt: typeof import('../src/services/website-crawler.service').parseRobotsTxt;
 let isAllowedByRobots: typeof import('../src/services/website-crawler.service').isAllowedByRobots;
 let synthesizeCaseStudy: typeof import('../src/services/case-study.service').synthesizeCaseStudy;
+let classifyProjectType: typeof import('../src/services/case-study.service').classifyProjectType;
+let validateModelProjectClassification: typeof import('../src/services/case-study.service').validateModelProjectClassification;
 let validateModelSuggestedFields: typeof import('../src/services/case-study.service').validateModelSuggestedFields;
 let researchCompetitors: typeof import('../src/services/competitor-research.service').researchCompetitors;
 let refreshProjectFields: typeof import('../src/services/project-fields.service').refreshProjectFields;
+let rebuildProjectKnowledgeIndex: typeof import('../src/services/project-knowledge.service').rebuildProjectKnowledgeIndex;
+let retrieveProjectKnowledge: typeof import('../src/services/project-knowledge.service').retrieveProjectKnowledge;
 
 before(async () => {
-  const [{ createApp }, storage, github, networkSafety, crawler, caseStudyService, competitorService, fieldsService] = await Promise.all([
+  const [{ createApp }, storage, github, networkSafety, crawler, caseStudyService, competitorService, fieldsService, knowledgeService] = await Promise.all([
     import('../src/app'),
     import('../src/storage/database'),
     import('../src/services/github-analyzer.service'),
@@ -38,6 +42,7 @@ before(async () => {
     import('../src/services/case-study.service'),
     import('../src/services/competitor-research.service'),
     import('../src/services/project-fields.service'),
+    import('../src/services/project-knowledge.service'),
   ]);
   database = storage.database;
   parseGitHubUrl = github.parseGitHubUrl;
@@ -45,9 +50,13 @@ before(async () => {
   parseRobotsTxt = crawler.parseRobotsTxt;
   isAllowedByRobots = crawler.isAllowedByRobots;
   synthesizeCaseStudy = caseStudyService.synthesizeCaseStudy;
+  classifyProjectType = caseStudyService.classifyProjectType;
+  validateModelProjectClassification = caseStudyService.validateModelProjectClassification;
   validateModelSuggestedFields = caseStudyService.validateModelSuggestedFields;
   researchCompetitors = competitorService.researchCompetitors;
   refreshProjectFields = fieldsService.refreshProjectFields;
+  rebuildProjectKnowledgeIndex = knowledgeService.rebuildProjectKnowledgeIndex;
+  retrieveProjectKnowledge = knowledgeService.retrieveProjectKnowledge;
   server = createServer(createApp());
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -154,16 +163,41 @@ test('health, private guest workspaces, authenticated project isolation, reports
     swotAnalysis: { strengths: ['Clear product focus'], weaknesses: ['Customer demand is unverified'], opportunities: ['Interview target teams'], threats: ['Competition is unverified'] },
     evidence: {
       website: { pages: [{ title: 'Acme Analytics', description: 'Analytics for small software teams', metadata: { siteName: 'Acme', keywords: ['analytics', 'software'] }, headings: ['Usage Reports', 'Team Dashboard'] }] },
-      github: { metadata: { description: 'Analytics platform', sizeKb: 240 }, languages: { TypeScript: 1400, SQL: 400 }, detectedTechnology: ['React', 'Express API framework', 'Prisma ORM/database client'], dependencies: ['react', 'express', 'prisma'], structure: ['package.json', 'vite.config.ts', '.github/workflows/ci.yml'], sourceInspection: { apiRoutes: ['/api/reports'], databaseIndicators: ['Prisma schema'] } },
+      github: { metadata: { description: 'Analytics platform', sizeKb: 240 }, languages: { TypeScript: 1400, SQL: 400 }, detectedTechnology: ['React', 'Express API framework', 'Prisma ORM/database client'], dependencies: ['react', 'express', 'prisma', 'vitest', 'passport', '@aws-sdk/client-s3', 'stripe'], structure: ['package.json', 'vite.config.ts', '.github/workflows/ci.yml'], sourceInspection: { apiRoutes: ['/api/reports'], databaseIndicators: ['Prisma schema'] } },
       competitors: { status: 'not_configured' },
     },
   };
-  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: null }, fieldAnalysis);
+  const analyzedFields = {
+    ...fieldAnalysis,
+    projectClassification: classifyProjectType({ project: { name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, website: fieldAnalysis.evidence.website, github: fieldAnalysis.evidence.github }),
+  };
+  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, analyzedFields);
+  database.prepare(`
+    INSERT INTO project_source_analyses (project_id, status, evidence_json, field_analysis_json, warnings_json, updated_at)
+    VALUES (?, 'completed', ?, ?, '[]', ?)
+  `).run(project.id, JSON.stringify(analyzedFields.evidence), JSON.stringify(analyzedFields), new Date().toISOString());
+  const indexedKnowledge = await rebuildProjectKnowledgeIndex(project.id);
+  assert.ok(indexedKnowledge.chunkCount > 0, 'project source and fields should be chunked into its isolated index');
+  assert.equal(indexedKnowledge.embeddingModel, 'local-hash-v1', 'the local vector fallback should work without an embedding credential');
+  const retrievedKnowledge = await retrieveProjectKnowledge(project.id, 'analytics for small software teams');
+  assert.ok(retrievedKnowledge.some((chunk) => chunk.sourceType === 'website' && /Analytics for small software teams/.test(chunk.content)));
   const firstFieldSet = (await json(await request(`/projects/${project.id}/fields`, { cookie: ownerCookie }))).data.fields as Array<Record<string, any>>;
   const companyField = firstFieldSet.find((field) => field.key === 'company_name');
   assert.ok(companyField);
   assert.equal(companyField?.value, 'Acme');
   assert.ok(firstFieldSet.some((field) => field.key === 'programming_languages'));
+  const typeField = firstFieldSet.find((field) => field.key === 'project_type');
+  assert.ok(typeField);
+  assert.equal(typeField?.value, 'Full Stack');
+  assert.deepEqual(typeField?.options, ['Frontend', 'Full Stack', 'Backend', 'Automation', 'Not enough evidence']);
+  assert.equal(typeField?.source, 'GitHub');
+  assert.ok(firstFieldSet.some((field) => field.key === 'testing_frameworks'));
+  assert.ok(firstFieldSet.some((field) => field.key === 'authentication_indicators'));
+  assert.ok(firstFieldSet.some((field) => field.key === 'cloud_provider_indicators'));
+  assert.ok(firstFieldSet.some((field) => field.key === 'external_api_sdk_dependencies'));
+  assert.ok(firstFieldSet.some((field) => field.key === 'suggested_software_architecture_pattern' && field.category === 'technical'));
+  const overriddenProjectType = await request(`/projects/${project.id}/fields/${typeField.id}`, { method: 'PATCH', cookie: ownerCookie, body: { value: 'Frontend' } });
+  assert.equal((await json(overriddenProjectType)).data.field.source, 'User');
   const analysisSuggestion = firstFieldSet.find((field) => field.key === 'suggested_ai_average_contract_value');
   assert.equal(analysisSuggestion?.source, 'AI');
   assert.equal(analysisSuggestion?.value, null);
@@ -179,18 +213,26 @@ test('health, private guest workspaces, authenticated project isolation, reports
   const acceptedSuggestion = await request(`/projects/${project.id}/fields/${fundingSuggestion.id}/suggestion`, { method: 'POST', cookie: ownerCookie, body: { action: 'accept' } });
   assert.equal((await json(acceptedSuggestion)).data.field.suggestionStatus, 'accepted');
 
-  const updatedEvidence = structuredClone(fieldAnalysis) as typeof fieldAnalysis;
+  const updatedEvidence = structuredClone(analyzedFields);
   updatedEvidence.evidence.website.pages[0]!.metadata.siteName = 'Acme Labs';
-  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: null }, updatedEvidence);
+  updatedEvidence.projectClassificationSource = 'Groq';
+  refreshProjectFields({ id: project.id, name: 'Private project', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/acme/analytics' }, updatedEvidence);
   const refreshedFields = (await json(await request(`/projects/${project.id}/fields`, { cookie: ownerCookie }))).data.fields as Array<Record<string, any>>;
   const refreshedCompany = refreshedFields.find((field) => field.key === 'company_name');
   assert.equal(refreshedCompany?.value, 'Owner corrected company');
   assert.equal(refreshedCompany?.aiValue, 'Acme Labs');
+  const refreshedProjectType = refreshedFields.find((field) => field.key === 'project_type');
+  assert.equal(refreshedProjectType?.value, 'Frontend');
+  assert.equal(refreshedProjectType?.aiValue, 'Full Stack');
+  assert.equal(refreshedProjectType?.aiSource, 'AI');
+  assert.equal(refreshedProjectType?.generatedBy, 'Groq project classification');
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_estimated_traffic')?.suggestionStatus, 'rejected');
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_funding_stage')?.suggestionStatus, 'accepted');
   assert.equal(refreshedFields.find((field) => field.key === 'suggested_ai_average_contract_value')?.suggestionStatus, 'pending');
   const restoredCompany = await request(`/projects/${project.id}/fields/${companyField.id}/restore-ai`, { method: 'POST', cookie: ownerCookie });
   assert.equal((await json(restoredCompany)).data.field.value, 'Acme Labs');
+  const restoredProjectType = await request(`/projects/${project.id}/fields/${typeField.id}/restore-ai`, { method: 'POST', cookie: ownerCookie });
+  assert.equal((await json(restoredProjectType)).data.field.value, 'Full Stack');
 
   const customFieldResponse = await request(`/projects/${project.id}/fields`, {
     method: 'POST', cookie: ownerCookie,
@@ -287,6 +329,14 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.equal((await request(`/projects/${project.id}`, { cookie: otherCookie })).status, 404);
   assert.equal((await request(`/projects/${project.id}/fields`, { cookie: otherCookie })).status, 404);
   assert.equal((await request(`/projects/${project.id}/fields/${customFieldId}`, { method: 'PATCH', cookie: otherCookie, body: { value: 1 } })).status, 404);
+  assert.equal((await request(`/analysis/projects/${project.id}/chat`, { cookie: otherCookie })).status, 404);
+  assert.equal((await request(`/analysis/projects/${project.id}/chat`, { method: 'POST', cookie: otherCookie, body: { question: 'What database is used?' } })).status, 404);
+
+  const unavailableChat = await request(`/analysis/projects/${project.id}/chat`, {
+    method: 'POST', cookie: ownerCookie, body: { question: 'What is this project for?' },
+  });
+  assert.equal(unavailableChat.status, 503, 'chat should report missing Groq credentials rather than fabricate an answer');
+  assert.deepEqual((await json(await request(`/analysis/projects/${project.id}/chat`, { cookie: ownerCookie }))).data.messages, [], 'failed provider requests are not persisted as complete conversations');
 
   const now = new Date().toISOString();
   const olderId = randomUUID();
@@ -307,8 +357,44 @@ test('health, private guest workspaces, authenticated project isolation, reports
   const olderVersion = await request(`/analysis/projects/${project.id}/case-studies/${olderId}`, { cookie: ownerCookie });
   assert.equal((await json(olderVersion)).data.content.executiveSummary, 'Earlier saved report.');
   assert.equal((await request(`/analysis/projects/${project.id}/case-studies/${olderId}`, { cookie: otherCookie })).status, 404);
+  assert.equal((await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
+    method: 'POST', cookie: otherCookie, body: { action: 'replace', sectionKey: 'executiveSummary', replacement: 'Not authorized' },
+  })).status, 404);
+  const unavailableRewrite = await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
+    method: 'POST', cookie: ownerCookie, body: { action: 'rewrite', sectionKey: 'executiveSummary', instruction: 'Make it clearer' },
+  });
+  assert.equal(unavailableRewrite.status, 503, 'AI section rewriting should report missing Groq credentials');
 
-  const generated = await request(`/reports/projects/${project.id}/report`, { method: 'POST', cookie: ownerCookie });
+  const replacedSection = await request(`/analysis/projects/${project.id}/case-studies/${newerId}/sections`, {
+    method: 'POST', cookie: ownerCookie, body: { action: 'replace', sectionKey: 'executiveSummary', replacement: 'Owner-edited executive summary.' },
+  });
+  assert.equal(replacedSection.status, 201);
+  const replacedData = (await json(replacedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
+  assert.notEqual(replacedData.caseStudyId, newerId, 'section edits should preserve prior case-study versions');
+  assert.equal(replacedData.content.executiveSummary, 'Owner-edited executive summary.');
+  assert.equal((await json(await request(`/analysis/projects/${project.id}/case-studies/${newerId}`, { cookie: ownerCookie }))).data.content.executiveSummary, 'Evidence-backed test report.');
+  const addedSection = await request(`/analysis/projects/${project.id}/case-studies/${replacedData.caseStudyId}/sections`, {
+    method: 'POST', cookie: ownerCookie, body: { action: 'add', sectionTitle: 'Research Notes', replacement: 'Manual section added for the owner.' },
+  });
+  assert.equal(addedSection.status, 201);
+  const addedData = (await json(addedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
+  assert.equal((addedData.content.customSections as Array<{ title: string }>)[0]?.title, 'Research Notes');
+  const removedSection = await request(`/analysis/projects/${project.id}/case-studies/${addedData.caseStudyId}/sections`, {
+    method: 'POST', cookie: ownerCookie, body: { action: 'remove', sectionKey: 'competitorComparison' },
+  });
+  assert.equal(removedSection.status, 201);
+  const removedData = (await json(removedSection)).data as { caseStudyId: string; content: Record<string, unknown> };
+  assert.equal(Object.hasOwn(removedData.content, 'competitorComparison'), false);
+  await rebuildProjectKnowledgeIndex(project.id);
+  const indexedLatestReport = database.prepare(`
+    SELECT content FROM project_knowledge_chunks
+    WHERE project_id = ? AND source_type = 'analysis' AND source_id LIKE ?
+  `).all(project.id, `case-study-report:${removedData.caseStudyId}:%`) as Array<{ content: string }>;
+  assert.ok(indexedLatestReport.length > 0, 'the latest saved and edited report should be included in project chat context');
+  assert.match(indexedLatestReport.map((chunk) => chunk.content).join('\n'), /Owner-edited executive summary/);
+  assert.match(indexedLatestReport.map((chunk) => chunk.content).join('\n'), /Research Notes/);
+
+  const generated = await request(`/reports/projects/${project.id}/report`, { method: 'POST', cookie: ownerCookie, body: { caseStudyId: removedData.caseStudyId } });
   assert.equal(generated.status, 201);
   const report = (await json(generated)).data as { downloadUrl: string; fileName: string };
   assert.ok(report.fileName.startsWith(`${project.id}-`));
@@ -354,6 +440,13 @@ test('health, private guest workspaces, authenticated project isolation, reports
   assert.match(String(caseStudy.websiteAnalysis), /https:\/\/inventory\.example\/product/);
   assert.match(String(caseStudy.executiveSummary), /Inventory Cloud/);
   assert.equal((caseStudy.profitabilityAnalysis as { status: string }).status, 'insufficient_data');
+  assert.equal((caseStudy.projectClassification as { type: string }).type, 'insufficient_evidence');
+  assert.equal(validateModelProjectClassification({ type: 'automation', confidence: 0.8, rationale: 'Repository describes a workflow automation product.' }).success, true);
+  assert.equal(validateModelProjectClassification({ type: 'web3', confidence: 0.8, rationale: 'Unsupported classification.' }).success, false);
+  const projectMeta = { name: 'Classifier test', websiteUrl: null, githubUrl: 'https://github.com/example/project' };
+  assert.equal(classifyProjectType({ project: projectMeta, website: null, github: { metadata: {}, detectedTechnology: ['React'], dependencies: ['react'], structure: ['src/components/App.tsx'], languages: { TypeScript: 100 }, sourceInspection: {} } }).type, 'frontend');
+  assert.equal(classifyProjectType({ project: projectMeta, website: null, github: { metadata: {}, detectedTechnology: ['Express.js'], dependencies: ['express'], structure: ['src/server.ts'], languages: { TypeScript: 100 }, sourceInspection: { apiRoutes: ['/api/items'] } } }).type, 'backend');
+  assert.equal(classifyProjectType({ project: projectMeta, website: null, github: { metadata: { description: 'Workflow automation platform for business processes' }, detectedTechnology: [], dependencies: ['playwright'], structure: [], languages: {}, sourceInspection: {} } }).type, 'automation');
   assert.equal(validateModelSuggestedFields([{ fieldName: 'Deployment Frequency', fieldType: 'text', category: 'technical', description: 'Record a verified release cadence.' }]).success, true);
   assert.equal(validateModelSuggestedFields([{ fieldName: 'Unsupported', fieldType: 'secret', category: 'technical', description: 'Invalid type.' }]).success, false);
   const competitorSearch = await researchCompetitors('Inventory Cloud', { pages: [] }, ['https://inventory.example']);

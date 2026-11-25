@@ -45,6 +45,15 @@ database.exec(`
   );
   CREATE INDEX IF NOT EXISTS projects_user_updated_idx ON projects(user_id, updated_at DESC);
 
+  CREATE TABLE IF NOT EXISTS project_source_analyses (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'completed_with_warnings', 'failed')),
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    field_analysis_json TEXT NOT NULL DEFAULT '{}',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS case_studies (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -89,6 +98,38 @@ database.exec(`
   );
   CREATE INDEX IF NOT EXISTS project_fields_project_order_idx
     ON project_fields(project_id, category, display_order, field_name);
+
+  -- Project-scoped vector records share the existing SQLite durability boundary.
+  -- The project_id foreign key ensures knowledge cannot outlive or cross projects.
+  CREATE TABLE IF NOT EXISTS project_knowledge_chunks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_url TEXT,
+    content TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    content_hash TEXT NOT NULL,
+    embedding_json TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, source_type, source_id)
+  );
+  CREATE INDEX IF NOT EXISTS project_knowledge_project_source_idx
+    ON project_knowledge_chunks(project_id, source_type);
+
+  CREATE TABLE IF NOT EXISTS project_chat_messages (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS project_chat_project_created_idx
+    ON project_chat_messages(project_id, created_at DESC);
 `);
 
 // Backfill the core fields for projects created before dynamic fields existed.

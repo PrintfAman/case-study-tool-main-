@@ -4,11 +4,8 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { database } from '../storage/database';
 import { AppError } from '../utils/app-error';
 import { successResponse } from '../utils/api-response';
-import { analyzeGitHubRepository } from '../services/github-analyzer.service';
-import { crawlWebsite } from '../services/website-crawler.service';
 import { synthesizeCaseStudy } from '../services/case-study.service';
-import { researchCompetitors } from '../services/competitor-research.service';
-import { refreshProjectFields } from '../services/project-fields.service';
+import { ensureProjectInformation, getFinalizedProjectInformation } from '../services/project-information.service';
 
 interface ProjectRow {
   id: string;
@@ -28,47 +25,37 @@ export async function runAnalysis(req: Request, res: Response): Promise<void> {
   if (claimed.changes === 0) throw new AppError('Analysis is already running for this project', { statusCode: 409, code: 'CONFLICT' });
 
   try {
-    let website: unknown | null = null;
-    let github: unknown | null = null;
-    const sourceWarnings: string[] = [];
-
-    if (project.website_url) {
-      try {
-        website = await crawlWebsite(project.website_url, 6);
-      } catch (error) {
-        sourceWarnings.push(`Website analysis unavailable: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-    }
-
-    if (project.github_url) {
-      try {
-        github = await analyzeGitHubRepository(project.github_url);
-      } catch (error) {
-        sourceWarnings.push(`GitHub analysis unavailable: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-    }
-
-    const competitors = await researchCompetitors(project.name, website, [project.website_url, project.github_url]);
-    if (competitors.warning) sourceWarnings.push(competitors.warning);
+    // Source crawling and field extraction happen as soon as the project is
+    // created. Reuse that evidence here so the user can review/finalize fields
+    // before this click creates a case-study version.
+    const sourceInfo = await ensureProjectInformation(project.id, userId);
+    const finalizedProjectInformation = getFinalizedProjectInformation(project.id);
+    const sourceWarnings = [...sourceInfo.warnings];
 
     const content = await synthesizeCaseStudy({
       project: { name: project.name, websiteUrl: project.website_url, githubUrl: project.github_url },
-      website,
-      github,
-      competitors,
+      website: sourceInfo.evidence.website,
+      github: sourceInfo.evidence.github,
+      competitors: sourceInfo.evidence.competitors,
+      projectInformation: finalizedProjectInformation,
     });
+    if (typeof content.synthesisWarning === 'string') sourceWarnings.push(content.synthesisWarning);
 
     const status = sourceWarnings.length > 0 ? 'completed_with_warnings' : 'completed';
     const id = randomUUID();
     const now = new Date().toISOString();
-    const persistedContent = { ...content, evidence: { website, github, competitors }, sourceWarnings };
+    const persistedContent = {
+      ...content,
+      evidence: sourceInfo.evidence,
+      finalizedProjectInformation,
+      sourceWarnings,
+    };
     database.exec('BEGIN IMMEDIATE');
     try {
       database.prepare(`
         INSERT INTO case_studies (id, project_id, status, content_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, project.id, status, JSON.stringify(persistedContent), now, now);
-      refreshProjectFields({ id: project.id, name: project.name, websiteUrl: project.website_url, githubUrl: project.github_url }, persistedContent);
       database.prepare('UPDATE projects SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(status, now, project.id, userId);
       database.exec('COMMIT');
     } catch (error) {
@@ -76,7 +63,7 @@ export async function runAnalysis(req: Request, res: Response): Promise<void> {
       throw error;
     }
 
-    res.status(200).json(successResponse({ projectId: project.id, caseStudyId: id, status, content: persistedContent }, 'Analysis completed'));
+    res.status(200).json(successResponse({ projectId: project.id, caseStudyId: id, status, content: persistedContent }, 'Case study created from finalized project information'));
   } catch (error) {
     database.prepare("UPDATE projects SET status = 'failed', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'analyzing'").run(new Date().toISOString(), project.id, userId);
     throw error;

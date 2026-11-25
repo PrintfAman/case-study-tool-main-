@@ -1,22 +1,16 @@
-/* ==========================================================================
-   THEME: WIREFRAME
-   Black canvas, white line-art, IBM Plex Mono, zero radius, 1px strokes.
-   Every value below is a design token. Components must never hardcode a
-   colour, font, radius or duration - they read these variables instead, so the
-   entire app can be re-skinned by changing this one block.
-
-   The `--tp-h` hue is declared on <html> in index.html, next to data-theme.
+/* ===========================================================================
+   THEME: CLEARSPACE
+   Cool, calm workspace colors with soft surfaces, confident type, and focused
+   accents. Component styles consume these tokens so the product stays cohesive.
    ========================================================================== */
 
 /* ---------- Ambient + interaction keyframes used by this app ---------- */
 
-/* The wireframe "vector tunnel" floor: the page grid drifts toward the viewer. */
 @keyframes fx-floor {
   from { background-position: 0 0; }
   to   { background-position: 0 64px; }
 }
 
-/* Slow perspective sway on the page stage, given by --tp-3d-web. */
 @keyframes d3-web {
   0%, 100% { transform: perspective(2400px) rotateX(2.5deg) rotateY(-3deg); }
   50%      { transform: perspective(2400px) rotateX(1deg) rotateY(3deg) translateY(-4px); }
@@ -95,73 +89,68 @@
 
 /* ---------- THE TOKEN BLOCK ---------- */
 
-[data-theme='wireframe'] {
-  /* FX: a 48px grid, tilted into the distance, drifting toward the viewer. */
-  --tp-fx:
-    linear-gradient(transparent 95%, rgba(255, 255, 255, 0.55) 95%),
-    linear-gradient(90deg, transparent 95%, rgba(255, 255, 255, 0.55) 95%);
-  --tp-fx-size: 48px 48px;
-  --tp-fx-anim: fx-floor 1.6s linear infinite;
-  --tp-fx-op: 0.35;
-  --tp-fx-blend: screen;
-  --tp-fx-tf: perspective(200px) rotateX(70deg) translateY(30%);
+[data-theme='workspace'] {
+  --tp-fx: none;
+  --tp-fx-size: auto;
+  --tp-fx-anim: none;
+  --tp-fx-op: 0;
+  --tp-fx-blend: normal;
+  --tp-fx-tf: none;
 
-  /* Motion */
   --tp-3d: none;
-  --tp-3d-anim: d3-float 8s ease-in-out infinite;
-  --tp-3d-web: d3-web 14s ease-in-out infinite;
-  --tp-dur: 100ms;
-  --tp-dur-slow: 320ms;
-  --tp-stagger: 70ms;
-  --tp-ease: linear;
-  --tp-press: 0.95;
+  --tp-3d-anim: none;
+  --tp-3d-web: none;
+  --tp-dur: 160ms;
+  --tp-dur-slow: 260ms;
+  --tp-stagger: 40ms;
+  --tp-ease: ease;
+  --tp-press: 0.985;
 
-  /* Imagery (no photos in this app - dashboard is typographic) */
   --tp-img-r: 16px;
-  --tp-img-frame: 1px solid #fff;
-  --tp-img-sh: none;
-  --tp-img-filter: grayscale(1) contrast(1.8) invert(0);
+  --tp-img-frame: 1px solid #ffffff;
+  --tp-img-sh: 0 12px 30px rgba(31, 48, 76, 0.12);
+  --tp-img-filter: none;
   --tp-img-overlay-op: 0;
   --tp-img-blend: normal;
   --tp-img-tilt: 0deg;
   --tp-img-ar: 4 / 5;
 
-  /* Surfaces */
-  --tp-bg: #000000;
-  --tp-canvas: #000000;
-  --tp-surf: #0b0b0b;
-  --tp-surf-2: #161616;
+  --tp-bg: #f3f6fb;
+  --tp-canvas: #f3f6fb;
+  --tp-surf: #ffffff;
+  --tp-surf-2: #f5f7fb;
 
-  /* Ink */
-  --tp-ink: #ffffff;
-  --tp-mute: #9a9a9a;
+  --tp-ink: #1b2940;
+  --tp-mute: #718099;
 
-  /* Accent - pure white on this theme; --tp-h re-hues --tp-acc-2 only */
-  --tp-acc: #ffffff;
-  --tp-acc-2: oklch(0.8 0.16 calc(var(--tp-h) + 140));
-  --tp-acc-ink: #000000;
-  --tp-line: #ffffff;
-  --tp-grad: linear-gradient(#ffffff, #ffffff);
+  --tp-acc: #526cf0;
+  --tp-acc-2: #22a386;
+  --tp-acc-ink: #ffffff;
+  --tp-line: #e5eaf2;
+  --tp-grad: linear-gradient(135deg, #253a60 0%, #536df1 100%);
+  --tp-nav: #17243b;
+  --tp-nav-ink: #edf2fb;
+  --tp-nav-mute: #9aa8bf;
+  --tp-nav-active: rgba(255, 255, 255, 0.09);
+  --tp-nav-line: rgba(255, 255, 255, 0.11);
 
-  /* Form */
-  --tp-r: 0px;
-  --tp-r-sm: 0px;
-  --tp-r-lg: 0px;
-  --tp-r-btn: 0px;
-  --tp-sh: none;
-  --tp-sh-sm: none;
+  --tp-r: 18px;
+  --tp-r-sm: 10px;
+  --tp-r-lg: 24px;
+  --tp-r-btn: 10px;
+  --tp-sh: 0 14px 38px rgba(31, 48, 76, 0.075);
+  --tp-sh-sm: 0 5px 16px rgba(31, 48, 76, 0.06);
   --tp-bw: 1px;
   --tp-tex: none;
   --tp-blur: none;
 
-  /* Type */
-  --tp-font-display: 'IBM Plex Mono', monospace;
-  --tp-font-body: 'IBM Plex Sans', system-ui;
-  --tp-font-mono: 'IBM Plex Mono', monospace;
-  --tp-w-display: 500;
-  --tp-track-display: -0.03em;
-  --tp-case-display: uppercase;
-  --tp-hero: 62px;
+  --tp-font-display: 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  --tp-font-body: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --tp-font-mono: 'SFMono-Regular', Consolas, monospace;
+  --tp-w-display: 700;
+  --tp-track-display: -0.045em;
+  --tp-case-display: none;
+  --tp-hero: 46px;
 }
 
 html { scroll-behavior: smooth; }

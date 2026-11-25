@@ -1,10 +1,12 @@
 import express, { Router } from 'express';
 import { bulkUpdateProjectFields, createProjectField, deleteProjectField, downloadProjectFieldAttachment, listProjectFields, reorderProjectFields, restoreAiProjectField, updateFieldSuggestion, updateProjectField, uploadProjectFieldAttachment } from '../controllers/project-fields.controller';
 import { createProject, deleteProject, getProject, listProjects } from '../controllers/projects.controller';
+import { discoverProjectFields } from '../controllers/project-information.controller';
 
 export const projectsRouter = Router();
 
 projectsRouter.post('/', createProject);
+projectsRouter.post('/:id/discover-fields', discoverProjectFields);
 projectsRouter.get('/', listProjects);
 projectsRouter.get('/:projectId/fields', listProjectFields);
 projectsRouter.post('/:projectId/fields', createProjectField);

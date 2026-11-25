@@ -132,7 +132,27 @@ function RichTextValue({ value }: { value: string }) {
     : <p key={index}>{renderRichTextLine(line, `line-${index}`)}</p>)}</div>;
 }
 
-export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { projectId: string; refreshToken?: number }) {
+type ProjectDiscoveryStatus = 'not_started' | 'running' | 'completed' | 'completed_with_warnings' | 'failed';
+
+export function ProjectInformationPanel({
+  projectId,
+  refreshToken = 0,
+  discoveryStatus,
+  discoveryBusy,
+  discoveryError,
+  onRetryDiscovery,
+  onViewCaseStudy,
+  creatingCaseStudy,
+}: {
+  projectId: string;
+  refreshToken?: number;
+  discoveryStatus: ProjectDiscoveryStatus;
+  discoveryBusy: boolean;
+  discoveryError: string | null;
+  onRetryDiscovery: () => void;
+  onViewCaseStudy: () => void;
+  creatingCaseStudy: boolean;
+}) {
   const [fields, setFields] = useState<ProjectField[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -150,6 +170,7 @@ export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { proje
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkDrafts, setBulkDrafts] = useState<Record<string, unknown>>({});
+  const [fieldDeleteConfirmationId, setFieldDeleteConfirmationId] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
 
   async function loadFields() {
@@ -228,12 +249,12 @@ export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { proje
   }
 
   async function removeField(field: ProjectField) {
-    if (!window.confirm(`Remove “${field.fieldName}” from this project?`)) return;
     setSaving(true);
     try {
       await deleteProjectField(projectId, field.id);
       setFields((current) => current.filter((item) => item.id !== field.id));
       setSelected((current) => { const next = new Set(current); next.delete(field.id); return next; });
+      setFieldDeleteConfirmationId(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to remove field'); }
     finally { setSaving(false); }
   }
@@ -315,7 +336,12 @@ export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { proje
     .filter((group) => group.fields.length > 0);
 
   return (
-    <Panel id="project-information" label="project workspace" title="Project Information" className="bento__wide" actions={<><Badge tone="outline">{fields.filter((field) => !field.suggested).length} fields</Badge><button className="btn btn--small" type="button" onClick={() => void loadFields()} disabled={loading}>Refresh</button></>}>
+    <Panel id="project-information" label="project workspace" title="Project Information" className="bento__wide" actions={<><Badge tone="outline">{fields.filter((field) => !field.suggested).length} fields</Badge><button className="btn btn--small" type="button" onClick={() => void loadFields()} disabled={loading}>Refresh fields</button><button className="btn btn--primary btn--small" type="button" onClick={onViewCaseStudy} disabled={loading || saving || discoveryBusy || creatingCaseStudy || (discoveryStatus !== 'completed' && discoveryStatus !== 'completed_with_warnings')}>{creatingCaseStudy ? 'Creating case study...' : 'View Case Study'}</button></>}>
+      {discoveryBusy || discoveryStatus === 'running' ? <p className="muted" role="status">Collecting website, GitHub, and AI fields. You can review them here as soon as collection finishes.</p> : null}
+      {discoveryStatus === 'completed' ? <p className="muted">Review and edit these fields. Your saved values will be used when you create the case study.</p> : null}
+      {discoveryStatus === 'completed_with_warnings' ? <p className="muted">Available fields are ready, but one or more sources or AI enrichment were unavailable. Review the values and fill any gaps before creating the case study.</p> : null}
+      {discoveryStatus === 'failed' && !discoveryBusy ? <div className="field-actions"><p className="form-error" role="alert">{discoveryError ?? 'Automatic field collection failed.'}</p><button className="btn btn--small" type="button" onClick={onRetryDiscovery}>Retry field collection</button></div> : null}
+      {discoveryStatus === 'not_started' && !discoveryBusy ? <div className="field-actions"><p className="muted">Project fields have not been collected yet.</p><button className="btn btn--small" type="button" onClick={onRetryDiscovery}>Collect fields</button></div> : null}
       <div className="field-toolbar">
         <input className="field-control" type="search" placeholder="Search fields and values" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search project fields" />
         <select className="field-control" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as 'all' | FieldCategory)} aria-label="Filter fields by category"><option value="all">All categories</option>{FIELD_CATEGORIES.map((category) => <option value={category} key={category}>{categoryNames[category]}</option>)}</select>
@@ -361,7 +387,7 @@ export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { proje
         {bulkOpen ? <form className="field-bulk-editor" onSubmit={(event) => void saveBulk(event)}>{selectedFields.map((field) => <label key={field.id}>{field.fieldName}<FieldInput field={field} value={bulkDrafts[field.id]} onChange={(value) => setBulkDrafts((current) => ({ ...current, [field.id]: value }))} /></label>)}<button className="btn btn--primary" type="submit" disabled={saving}>Save selected fields</button></form> : null}
       </section> : null}
 
-      {!loading && filteredFields.length === 0 ? <p className="muted">No matching fields. Run project analysis or add a custom field.</p> : null}
+      {!loading && filteredFields.length === 0 ? <p className="muted">No matching fields yet. Add a custom field or retry source collection.</p> : null}
       <div className="field-category-list">{groupedFields.map(({ category, fields: categoryFields }) => {
         const isCollapsed = collapsed.has(category);
         return <section className="field-category" key={category}>
@@ -387,9 +413,13 @@ export function ProjectInformationPanel({ projectId, refreshToken = 0 }: { proje
             <div className="field-actions field-actions--card">
               {field.userEdited && field.aiValue !== null ? <button className="btn btn--small" type="button" disabled={saving} onClick={() => void restoreField(field)}>Restore AI value</button> : null}
               <button className="btn btn--small" type="button" disabled={saving} onClick={() => void patchField(field, { visibility: field.visibility === 'visible' ? 'hidden' : 'visible' })}>{field.visibility === 'visible' ? 'Hide' : 'Show'}</button>
-              <button className="btn btn--danger btn--small" type="button" disabled={saving} onClick={() => void removeField(field)}>Remove</button>
+              <button className="btn btn--danger btn--small" type="button" disabled={saving} onClick={() => setFieldDeleteConfirmationId((current) => current === field.id ? null : field.id)}>Remove</button>
               <span className="field-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
             </div>
+            {fieldDeleteConfirmationId === field.id ? <div className="field-delete-confirm" role="group" aria-label={`Confirm removing ${field.fieldName}`}>
+              <p>Remove <strong>{field.fieldName}</strong> from this project?</p>
+              <div className="field-actions"><button className="btn btn--small" type="button" disabled={saving} onClick={() => setFieldDeleteConfirmationId(null)}>Cancel</button><button className="btn btn--danger btn--small" type="button" disabled={saving} onClick={() => void removeField(field)}>{saving ? 'Removing...' : 'Confirm remove'}</button></div>
+            </div> : null}
           </article>)}</div> : null}
         </section>;
       })}</div>
