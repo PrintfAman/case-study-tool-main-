@@ -46,7 +46,20 @@ export async function verifyStorageBucket(): Promise<void> {
     headers: authHeaders(key),
     signal: AbortSignal.timeout(15_000),
   });
-  if (!response.ok) throw new Error(`Supabase Storage bucket "${bucket}" is unavailable (HTTP ${response.status})`);
+  if (!response.ok) {
+    const responseBody = await response.text();
+    let detail = responseBody;
+    try {
+      const payload = JSON.parse(responseBody) as { message?: unknown; error?: unknown; error_description?: unknown };
+      const message = [payload.message, payload.error_description, payload.error]
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+      if (message) detail = message;
+    } catch {
+      // Keep a bounded plain-text response below when Storage does not return JSON.
+    }
+    detail = detail.replace(/\s+/g, ' ').trim().slice(0, 300);
+    throw new Error(`Supabase Storage bucket "${bucket}" is unavailable (HTTP ${response.status}${detail ? `: ${detail}` : ''})`);
+  }
   const details = await response.json() as { public?: unknown };
   if (details.public !== false) throw new Error(`Supabase Storage bucket "${bucket}" must be private`);
 }
